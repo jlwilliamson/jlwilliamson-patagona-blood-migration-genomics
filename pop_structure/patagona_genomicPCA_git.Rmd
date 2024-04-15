@@ -1,0 +1,622 @@
+---
+title: "patagona_genomicPCA"
+author: "Jessie Williamson"
+date: "1/25/2022; last revised 2024-04-15"
+output: html_document
+---
+
+Genomic PCA analyses in Williamson et al. 2024, giant hummingbirds, *PNAS*. 
+
+
+# POPULATION STRUCTURE AND ASSIGNMENT: PCA
+
+# Clear workspace and set WD
+```{R}
+rm(list=ls(all=TRUE)) # clear workspace 
+setwd("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona")
+# make subdirectory for  genomics stuff
+# rsync the vcftools_filter file into genomics folder; then read in data from here as usual
+# file called vcftools_filter.vcf
+```
+
+
+# Load packages
+```{r}
+library(adegenet)
+library(ade4)
+library(vcfR)
+library(scales)
+library(parallel)
+library(dplyr)
+library(tibble)
+library(purrr)
+library(SeqArray) # For working with whole genome dataa
+library(SNPRelate)
+library(viridis)
+library(ggrepel) # For nice repel box labels on PCA plots
+
+library(tidyverse)
+library(data.table)
+library(grid)
+library(gridExtra)
+
+library(plotly)
+
+# If you get error messages saying "no package called X" or "not available for this version of R", insteall from source
+#Install SeqArray from source
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("SeqArray")
+
+# # if SNPRelate needs to be installed
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#  install.packages("BiocManager")
+# 
+# BiocManager::install("SNPRelate")
+```
+
+---
+
+
+# Load in data 
+```{r}
+pgig_vcf <- read.vcfR("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/vcftools_filter.vcf")
+#pgig_vcf <- read.vcfR("vcftools_filter.vcf") # THIS WILL BE ONE VCF FILE COMBINED
+ # genomics databases (but slightly more confusing) faster than combine_vcfs
+# Don't forget to change the name of the file you're reading in based on how you name patagona vcf
+# FINAL FILE NAMED: vcftools_filter.vcf
+
+# Read in VCF files for each the northern and southern populations
+northern_vcf <- read.vcfR("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/patagona_northern_75complete_10kthin.vcf.recode.vcf")
+southern_vcf <- read.vcfR("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/patagona_southern_75complete_10kthin.vcf.recode.vcf")
+# I should probably save a vertion of an .RData file with all this stuff read in
+
+# Load in first UCE vcf - 90% matrix
+uce_vcf <- read.vcfR("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/patagona_allUCE_vcftoolsfilter_nothin_50complete.vcf")
+
+# Load in toepad genome data
+toegen_vcf <- read.vcfR("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/patagona_toepadgenomes_northsouthrefs_vcftoolsfilter_10kthin_100complete.vcf")
+```
+
+
+-----
+
+### PCA WITH SNPRELATE#######
+
+# Using SNPrelate to explore complete Genomic Data 
+**Whole genome data for our paper
+```{R}
+# Convert VCF to GDS
+# library(SeqArray)
+# seqVCF2GDS(pgig_vcf, out.fn=pgig.gds, storage.option="LZMA_RA")
+# 
+# gds <- seqOpen(pgig.gds) # open connection w/ file 
+# gds
+# Once you open once you can't re-open; closing can work, but sometimes better to just restart r session w/ "q()"
+# YOu aren't actually READING data into R; you're just opening a connection w/ a file on the disk 
+# This allows for more efficient processing
+# BELOW:
+# Tells you what's in GDS file 
+# genotype: genotype data stored, other annotations, etc. 
+
+## load SNP data in VCF format 
+snpgdsVCF2GDS(vcf.fn="/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_75complete_NoWChromosome_NoNK279003_2023-04-04.vcf", out.fn="patagona.gds", method = c("copy.num.of.ref"),compress.annotation="ZIP.max", snpfirstdim=FALSE, verbose=TRUE)
+
+## summarize input file
+snpgdsSummary("patagona.gds")
+
+## open file
+genofile <- snpgdsOpen("patagona.gds") # then also need to add in code later to close this file
+read.gdsn(index.gdsn(genofile, "sample.id"))
+
+## add info on samples (sample ID, taxa ID, locality, pheno scores, etc.)
+#sample_info <- read.table("test_sample_info.txt", sep="\t", header=TRUE)
+sample_info <- read.csv("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/sample_info_genomes_NoNK279003.csv") 
+# Remember that these names need to match full Pgigas_northern_xxxxx ETC styles
+# AND, the column that you want to merge by below (currently "ID"; all caps) MUST match 'miss'
+
+## assess missing data for each sample
+miss <- snpgdsSampMissRate(genofile, sample.id=NULL, snp.id=NULL, with.id=TRUE)
+miss <- as.data.frame(miss)
+miss <- setDT(miss,keep.rownames=TRUE)[]
+colnames(miss) <- c("ID", "missing")
+miss_merge <- merge(miss, sample_info, by="ID") # Need to see Stepfanie's file
+miss_output <- select(miss_merge, ID, missing, country) # Make this whatever you want
+
+## write missing data to file
+#write.table(miss_output,"./RSFL-YSFL_WGS_m80_d3_missing.txt", sep="\t", quote=FALSE, row.names=TRUE)
+
+## run PCA using SNPRelate
+pca <- snpgdsPCA(gdsobj=genofile, 
+                 autosome.only=FALSE, 
+                 sample.id=NULL)
+
+## get percent variation explained for each PC axis
+pc.percent <- pca$varprop*100
+head(round(pc.percent, 2))
+
+## pull sample ID + first four PC axes
+pca_coords <- data.frame(ID = pca$sample.id,
+                         pc1 = pca$eigenvect[,1],    # the first eigenvector
+                         pc2 = pca$eigenvect[,2],    # the second eigenvector
+                         pc3 = pca$eigenvect[,3],
+                         pc4 = pca$eigenvect[,4],
+                         stringsAsFactors = FALSE)
+head(pca_coords)
+
+## merge PCA results with sample info by ID number
+pca_coords_merged <- merge(pca_coords, sample_info, by.x="ID")
+
+## figure colors
+fig_colors <- c("navajowhite4", "purple3", "#FFFF00","turquoise3")
+
+north_south_colors <- c("turquoise3", "navajowhite4")
+# Argentina (brown), Chile (purple), Ecuador (yellow), Peru (turquoise)
+
+## scatterplot of PC1 versus PC2
+## PLOT FOR SUPPLEMENT
+pdf(file="PCA_Genomes_NoNK279003_75Complete_ColorByLineage_PCA1-2_2023-04-12.pdf", width=3, height=3) # Write plot to pdf 
+# Writing out these dimensions to read in for multipanel figure in Illustrator
+pca_scatter1_2 <- ggplot() +
+  geom_hline(aes(yintercept=0), color="gray") +
+  geom_vline(aes(xintercept=0), color="gray") +
+  geom_point(data=pca_coords_merged, aes(x=pc1, y=pc2, fill=analysis_lineage), size=4, alpha=0.75, shape=21, stroke=0.2) +
+  #geom_text(aes(label=pca_coords_merged_uce$identifier),hjust=0,vjust=0) + 
+  # geom_label_repel(aes(x=pca_coords_merged$pc1, y=pca_coords_merged$pc2, label=pca_coords_merged$identifier), box.padding=0.25, point.padding=0.1, segment.color='grey50', max.overlaps=25) +
+  labs(x="PC1 (43.52%)", y="PC2 (3.51%)") +
+  scale_fill_manual(values=north_south_colors) +
+  theme_classic() +
+#  ggtitle("All data, PC1 & 2, color by country") +
+  theme(legend.position="none", axis.line=element_line(color="black"), axis.title=element_text(face="bold",size=14), axis.text=element_text(size=12,color="black"))
+pca_scatter1_2
+dev.off()
+
+
+## scatterplot of PC3 versus PC4
+pdf(file="PCA_Genomes_NoNK279003_75Complete_PCA1-3_2023-04-06.pdf", width=6, height=6) # Write plot to pdf
+pca_scatter3_4 <- ggplot() +
+  geom_hline(aes(yintercept=0), color="gray") +
+  geom_vline(aes(xintercept=0), color="gray") +
+  geom_point(data=pca_coords_merged, aes(x=pc1, y=pc3, fill=analysis_lineage), size=4, alpha=0.75, shape=21, stroke=0.2) +
+  labs(x="PC1 (43.52%)", y="PC3 (2.51%)") + 
+  scale_fill_manual(values=north_south_colors) +
+  theme_classic() +
+  ggtitle("All data, PC3 & 4, color by country") +
+  theme(legend.position="right", axis.line=element_line(color="black"), axis.title=element_text(face="bold",size=12), axis.text=element_text(size=10,color="black"))
+pca_scatter3_4
+dev.off()
+
+# Plots for paper
+# ## scatterplot of PC1 versus PC2
+# pdf(file="GenomicPCA_AllIndividuals_snpRelate_PCA1-2_ForPlot_2022-01-15.pdf", width=4, height=2.5) # Write plot to pdf 
+# pca_scatter1_2 <- ggplot() +
+#   geom_hline(aes(yintercept=0), color="gray") +
+#   geom_vline(aes(xintercept=0), color="gray") +
+#   geom_point(data=pca_coords_merged, aes(x=pc1, y=pc2, fill=country), size=4, alpha=0.75, shape=21, stroke=0.2) +
+#    #geom_text(aes(label=id),hjust=0, vjust=0) + # not working
+#   labs(x="PC1 (43.06%)", y="PC2 (3.45%)") +
+#   scale_fill_manual(values=fig_colors) +
+#   theme_classic() +
+#   #ggtitle("All data, PC1 & 2, color by country") +
+#   theme(legend.position="right", axis.line=element_line(color="black"), axis.title=element_text(face="bold",size=12), axis.text=element_text(size=10,color="black"))
+# pca_scatter1_2
+# dev.off()
+
+# ## scatterplot of PC3 versus PC4
+# pdf(file="GenomicPCA_AllIndividuals_snpRelate_PCA3-4_ForPlot_2022-01-15.pdf", width=4, height=2.5) # Write plot to pdf
+# pca_scatter3_4 <- ggplot() +
+#   geom_hline(aes(yintercept=0), color="gray") +
+#   geom_vline(aes(xintercept=0), color="gray") +
+#   geom_point(data=pca_coords_merged, aes(x=pc3, y=pc4, fill=country), size=4, alpha=0.75, shape=21, stroke=0.2) +
+#   labs(x="PC3 (2.71%)", y="PC4 (2.19%)") + 
+#   scale_fill_manual(values=fig_colors) +
+#   theme_classic() +
+#  # ggtitle("All data, PC3 & 4, color by country") +
+#   theme(legend.position="right", axis.line=element_line(color="black"), axis.title=element_text(face="bold",size=12), axis.text=element_text(size=10,color="black"))
+# pca_scatter3_4
+# dev.off()
+
+# reference allele frequency of each variant
+library(SeqArray)
+# Before the next step, need to convert genofile to SeqVarGDSClass using seqVCF2GDS
+# See Stepfanie's code to see how she did thiss
+afreq <- seqAlleleFreq(genofile)
+head(afreq)
+summary(afreq) # summary info about allele frequencies 
+
+closefn.gds(genofile)
+```
+
+
+# Using SNPrelate to explore All UCE + UCE from genomes data (n=70 birds) - Fig. 2B-C
+Ethan's het filtered dataset to get them to play nice together
+```{R}
+# Convert VCF to GDS
+# library(SeqArray)
+# seqVCF2GDS(pgig_vcf, out.fn=pgig.gds, storage.option="LZMA_RA")
+# 
+# gds <- seqOpen(pgig.gds) # open connection w/ file 
+# gds
+# Once you open once you can't re-open; closing can work, but sometimes better to just restart r session w/ "q()"
+# YOu aren't actually READING data into R; you're just opening a connection w/ a file on the disk 
+# This allows for more efficient processing
+# BELOW:
+# Tells you what's in GDS file 
+# genotype: genotype data stored, other annotations, etc. 
+
+## load SNP data in VCF format (see below for list of files to load!)
+# snpgdsVCF2GDS(vcf.fn="/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/patagona_UCE_WGS_het40_10kthin_90per.recode.vcf", out.fn="uce70.gds", method = c("copy.num.of.ref"),compress.annotation="ZIP.max", snpfirstdim=FALSE, verbose=TRUE)
+# THIS DATASET IS THE ONE ETHAN MADE WHILE JESSIE WAS IN PERU TO FILTER BY HET = 0.4 TO GET WGS AND UCES TO PLAY NICE
+
+## Load in data 4/6/23
+## This dataset is the one Jessie produced semi-based on Ethan's het filter dataset above, but with a few other vcftools additions
+# and being careful to leave out W chromosome
+snpgdsVCF2GDS(vcf.fn="/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/analysis_vcfs/patagona_UCE_TissueUCEAndGenomes_singleref_40hetfilter_NoWChromosome_minmeanDP6_10kthin_90Complete_2023-04-06.vcf", out.fn="uce70.gds", method = c("copy.num.of.ref"),compress.annotation="ZIP.max", snpfirstdim=FALSE, verbose=TRUE)
+# 4416 SNPS
+
+# Remember to change the name of the dataset you're working with (all UCEs, good UCEs, tissue UCEs, etc)
+
+## summarize input file
+snpgdsSummary("uce70.gds")
+
+## open file
+uce70.genofile <- snpgdsOpen("uce70.gds") # then also need to add in code later to close this file
+read.gdsn(index.gdsn(uce70.genofile, "sample.id"))
+
+## add info on samples (ID, and all data you want to work with)
+#sample_info <- read.table("test_sample_info.txt", sep="\t", header=TRUE)
+# Remember that these names need to match full Pgigas_northern_xxxxx ETC styles (aka sample names)
+# AND, the column that you want to merge by below (currently "ID"; all caps) MUST match 'miss'
+sample_info_uce70 <- read.csv("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/sample_info_AllUCEs_and_UCEsFromGenomes_No279003.csv") 
+
+# Adjust levels for plotting
+str(sample_info_uce70)
+sample_info_uce70$Population <- as.factor(sample_info_uce70$Population)
+levels(sample_info_uce70$Population)
+
+# Relevel factor so order shows up as you want in plots 
+sample_info_uce70$Population <- factor(sample_info_uce70$Population, levels = c("Ecuador", "Peru", "Argentina", "Chile", "Elevational Migrant Wintering")) 
+
+
+## assess missing data for each sample
+miss <- snpgdsSampMissRate(uce70.genofile, sample.id=NULL, snp.id=NULL, with.id=TRUE)
+miss <- as.data.frame(miss)
+miss <- setDT(miss,keep.rownames=TRUE)[]
+colnames(miss) <- c("ID", "missing")
+miss_merge <- merge(miss, sample_info_uce70, by="ID") # Need to see Stepfanie's file
+miss_output_uce70 <- select(miss_merge, ID, missing, country) # Make this whatever you want
+
+## run PCA using SNPRelate
+pca.uce70 <- snpgdsPCA(gdsobj=uce70.genofile, 
+                 autosome.only=FALSE, 
+                 sample.id=NULL)
+
+
+## pull sample ID + first four PC axes
+pca_coords_uce70 <- data.frame(ID = pca.uce70$sample.id,
+                         pc1 = pca.uce70$eigenvect[,1],    # the first eigenvector
+                         pc2 = pca.uce70$eigenvect[,2],    # the second eigenvector
+                         pc3 = pca.uce70$eigenvect[,3],
+                         pc4 = pca.uce70$eigenvect[,4],
+                         stringsAsFactors = FALSE)
+head(pca_coords_uce70)
+
+## merge PCA results with sample info by ID number
+pca.coords.merged.uce70 <- merge(pca_coords_uce70, sample_info_uce70, by.x="ID")
+
+
+## figure colors
+fig_colors <- c("#FF0000", "#00C5CD", "#8B795E")
+# hybrid=red, northern=teal, southern=brown  
+
+fig_colors_hybridpink <- c("#F708CA", "#00C5CD", "#8B795E")
+# hybrid=red, northern=teal, southern=brown  
+
+
+pop_plotting_colors <- c("#196C91","#99B5BC","#F2C900","#FF0000", "#8D26F9")
+# Order of levels is: Ecuador, Peru, Argentina, Chile, Elevational Migrant Wintering
+# Keep Ecuador and Peru cooler colors
+# Keep Chile and Argentina warmer colors 
+# Ecuador = navy, Peru=purple, Argentina=lemon, Chile= dark red, 
+
+
+# Argentina = F2C900 (deep gold yellow)
+# Chile = FF0000 (bright red)
+# Peru= 99B5BC (electric purple)
+# Ecuador = 196C91 (navy; for now)
+
+## get percent variation explained for each PC axis
+pc.percent.uce70 <- pca.uce70$varprop*100
+head(round(pc.percent.uce70, 2))
+
+#####
+
+#### PLOTS FOR FIGURE 2 IN PAPER
+# Keep in mind that these have been formatted to read into Illustrator and stick into Panel 2
+
+### ACTUAL PLOTS OF THE DATA, NORTHERN AND SOUTHERN - FIGURE 2B
+pdf(file="PCA_UCE_TissueUCEAndGenomes_SingleRef_40hetfilter_NoWChromosome_minMeanDP6_10kthin_90Complete_ColorByLineage_2023-04-06_PC1-2.pdf", height=5, width=6) # Write plot to pdf 
+pca_scatter1_2 <- ggplot() +
+  geom_hline(aes(yintercept=0), color="gray") +
+  geom_vline(aes(xintercept=0), color="gray") +
+  geom_point(data=pca.coords.merged.uce70, aes(x=pc1, y=pc2, fill=genomic_haplotype), size=4, alpha=0.75,shape=21,stroke=0.2) +
+  #geom_text(aes(label=pca_coords_merged_uce$identifier),hjust=0,vjust=0) + 
+  # geom_label_repel(aes(x=pca.coords.merged.uce70$pc1, y=pca.coords.merged.uce70$pc2, label=pca.coords.merged.uce70$identifier),
+  #                 box.padding=0.25, point.padding=0.1, segment.color='grey50', max.overlaps=25) +
+  labs(x="PC1 (28.96%)", y="PC2 (2.23%)") +
+  scale_fill_manual(values=fig_colors_hybridpink) +
+ # scale_x_continuous(limits = c(-0.0005, 0.0005)) + 
+  theme_classic() +
+  #ggtitle("UCEs + UCES from genomes (n=70 birds) - PC 1 & 2\n10k thin, 90% complete matrix; 4,416 SNPS") +
+  theme(legend.position="none", axis.line=element_line(color="black"), axis.title=element_text(face="bold",size=12), axis.text=element_text(size=10,color="black"))
+pca_scatter1_2
+dev.off()
+
+
+## Plot of UCEs + UCEs from genomes (n=70 birds), PC3-4 - FIGURE 2C
+pdf(file="AllData70Birds_UCESAndUCEsFromGenomes_SingleRef_10kThin_90Complete_Het0.4_ColorByLineage_2023-04-06_PC3-4.pdf", width=8, height=8) # Write plot to pdf
+pca_scatter3_4 <- ggplot() +
+  geom_hline(aes(yintercept=0), color="gray") +
+  geom_vline(aes(xintercept=0), color="gray") +
+  geom_point(data=pca.coords.merged.uce70, aes(x=pc1, y=pc3, fill=genomic_haplotype), size=4, alpha=0.75,shape=21,stroke=0.2) +
+  # geom_label_repel(aes(x=pca.coords.merged.uce70$pc3, y=pca.coords.merged.uce70$pc4, label=pca.coords.merged.uce70$identifier),
+  #                 box.padding=0.25, point.padding=0.1, segment.color='grey50', max.overlaps=25) +
+  labs(x="PC3 (28.96%)", y="PC3 (1.84%)") + 
+  scale_fill_manual(values=fig_colors_hybridpink) +
+  theme_classic() +
+  ggtitle("UCEs + UCES from genomes (n=70 birds) - PC 1 & 3\n90% complete matrix; 4,416 SNPS") +
+  theme(legend.position="right", axis.line=element_line(color="black"), axis.title=element_text(face="bold",size=12), axis.text=element_text(size=10,color="black"))
+pca_scatter3_4
+dev.off()
+
+#### 
+
+closefn.gds(uce70.genofile)
+```
+
+
+# Using SNPrelate to explore Northern and Southern pop data - Fig. S4A
+```{R}
+## Load in northern bird VCF 
+snpgdsVCF2GDS(vcf.fn="/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/patagona_northern_75complete_10kthin.vcf.recode.vcf", out.fn="pgig_northern.gds", method = c("copy.num.of.ref"),compress.annotation="ZIP.max", snpfirstdim=FALSE, verbose=TRUE)
+
+# snpgdsVCF2GDS(vcf.fn="/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/patagona_southern_75complete_10kthin.vcf.recode.vcf", out.fn="pgig_southern.gds", method = c("copy.num.of.ref"),compress.annotation="ZIP.max", snpfirstdim=FALSE, verbose=TRUE)
+
+# Load in southern bird VCF
+# Remember to load in the vcf file without NK279003 (female), which is related to NK279017 (male) and creates
+# an artificial clustering pattern
+snpgdsVCF2GDS(vcf.fn="/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/patagona_southern_75complete_10kthin_No279003.vcf", out.fn="pgig_southern.gds", method = c("copy.num.of.ref"),compress.annotation="ZIP.max", snpfirstdim=FALSE, verbose=TRUE)
+
+## summarize input files
+snpgdsSummary("pgig_northern.gds")
+snpgdsSummary("pgig_southern.gds")
+
+## open files
+geno.n <- snpgdsOpen("pgig_northern.gds") # then also need to add in code later to close this file
+geno.s <- snpgdsOpen("pgig_southern.gds") # then also need to add in code later to close this file
+read.gdsn(index.gdsn(geno.n, "sample.id"))
+read.gdsn(index.gdsn(geno.s, "sample.id"))
+
+## add info on samples (sample ID, taxa ID, locality, pheno scores, etc.)
+sample_info_northern <- read.csv("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/sample_info_northern.csv") 
+#sample_info_southern <- read.csv("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/sample_info_southern.csv") 
+sample_info_southern <- read.csv("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/sample_info_southern_No279003.csv") 
+# Need to check Stepfanie's file to see how she set this up
+# Remember that these names need to match full Pgigas_northern_xxxxx ETC styles
+# AND, the column that you want to merge by below (currently "ID"; all caps) MUST match 'miss'
+
+## assess missing data for each sample
+miss.n <- snpgdsSampMissRate(geno.n, sample.id=NULL, snp.id=NULL, with.id=TRUE)
+miss.n <- as.data.frame(miss.n)
+miss.n <- setDT(miss,keep.rownames=TRUE)[]
+colnames(miss.n) <- c("ID", "missing")
+miss.n_merge <- merge(miss.n, sample_info_northern, by="ID") # Need to see Stepfanie's file
+miss.n_output <- select(miss.n_merge, ID, missing, country) # Make this whatever you want
+
+## assess missing data for each sample
+miss.s <- snpgdsSampMissRate(geno.s, sample.id=NULL, snp.id=NULL, with.id=TRUE)
+miss.s <- as.data.frame(miss.s)
+miss.s <- setDT(miss,keep.rownames=TRUE)[]
+colnames(miss.s) <- c("ID", "missing")
+miss.s_merge <- merge(miss.s, sample_info_southern, by="ID") # Need to see Stepfanie's file
+miss.s_output <- select(miss.s_merge, ID, missing, country) # Make this whatever you want
+
+
+## write missing data to file
+write.table(miss.n_output,"./patagona_northern_missing.txt", sep="\t", quote=FALSE, row.names=TRUE)
+write.table(miss.s_output,"./patagona_southern_missing.txt", sep="\t", quote=FALSE, row.names=TRUE)
+
+
+## run PCA using SNPRelate
+pca.northern <- snpgdsPCA(gdsobj=geno.n, 
+                 autosome.only=FALSE, 
+                 sample.id=NULL)
+
+pca.southern <- snpgdsPCA(gdsobj=geno.s, 
+                 autosome.only=FALSE, 
+                 sample.id=NULL)
+
+## get percent variation explained for each PC axis
+pc.percent.n <- pca.northern$varprop*100
+head(round(pc.percent.n, 2))
+
+pc.percent.s <- pca.southern$varprop*100
+head(round(pc.percent.s, 2))
+
+## pull sample ID + first four PC axes
+pca_coords_northern <- data.frame(ID = pca.northern$sample.id,
+                         pc1 = pca.northern$eigenvect[,1],    # the first eigenvector
+                         pc2 = pca.northern$eigenvect[,2],    # the second eigenvector
+                         pc3 = pca.northern$eigenvect[,3],
+                         pc4 = pca.northern$eigenvect[,4],
+                         stringsAsFactors = FALSE)
+head(pca_coords_northern)
+
+pca_coords_southern <- data.frame(ID = pca.southern$sample.id,
+                         pc1 = pca.southern$eigenvect[,1],    # the first eigenvector
+                         pc2 = pca.southern$eigenvect[,2],    # the second eigenvector
+                         pc3 = pca.southern$eigenvect[,3],
+                         pc4 = pca.southern$eigenvect[,4],
+                         stringsAsFactors = FALSE)
+head(pca_coords_southern)
+
+## merge PCA results with sample info by ID number
+pca_coords_northern_merged <- merge(pca_coords_northern, sample_info_northern, by.x="ID")
+pca_coords_southern_merged <- merge(pca_coords_southern, sample_info_southern, by.x="ID")
+```
+
+
+# Using SNPrelate to explore tissue UCE data - Fig. S4B
+```{R}
+# Convert VCF to GDS
+# library(SeqArray)
+# seqVCF2GDS(pgig_vcf, out.fn=pgig.gds, storage.option="LZMA_RA")
+# 
+# gds <- seqOpen(pgig.gds) # open connection w/ file 
+# gds
+# Once you open once you can't re-open; closing can work, but sometimes better to just restart r session w/ "q()"
+# YOu aren't actually READING data into R; you're just opening a connection w/ a file on the disk 
+# This allows for more efficient processing
+# BELOW:
+# Tells you what's in GDS file 
+# genotype: genotype data stored, other annotations, etc. 
+
+
+## load SNP data in VCF format (see below for list of files to load!)
+snpgdsVCF2GDS(vcf.fn="/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/UCE/patagona_UCE_TissueUCE_singleref_minmeanDP6_10kthin_100complete_2023-04-12.vcf", out.fn="uce.gds", method = c("copy.num.of.ref"),compress.annotation="ZIP.max", snpfirstdim=FALSE, verbose=TRUE)
+
+# If loading in tissue UCE data: patagona_tissueUCE_vcftoolsfilter_nothin_100complete.vcf
+# If loading in good UCE data (tissues + 3 toe pads): patagona_goodUCE_vcftoolsfilter_nothin_100complete.vcf
+# Load data to place type 1, AMNH 37501: patagona_subsetUCE_PlacingAMNH37501_Type1_vcftoolsfilter_nothin_100complete.vcf
+# Load data to place type 2, AMNH 37500: patagona_subsetUCE_PlacingAMNH37500_Type2_vcftoolsfilter_nothin_100complete.vcf
+# Load data to place both types: patagona_subsetUCE_PlacingBothTypes_vcftoolsfilter_nothin_100complete.vcf
+      ## Cant work with both types at once bc only 2 SNPs; plot is wrong wrong bad bad 
+# Load data to place AMNH 803397: patagona_subsetUCE_PlacingAMNH803397_vcftoolsfilter_nothin_100complete.vcf
+
+# Remember to change the name of the dataset you're working with (all UCEs, good UCEs, tissue UCEs, etc)
+
+## summarize input file
+snpgdsSummary("uce.gds")
+
+## open file
+uce.genofile <- snpgdsOpen("uce.gds") # then also need to add in code later to close this file
+read.gdsn(index.gdsn(uce.genofile, "sample.id"))
+
+## add info on samples (ID, and all data you want to work with)
+#sample_info <- read.table("test_sample_info.txt", sep="\t", header=TRUE)
+# Remember that these names need to match full Pgigas_northern_xxxxx ETC styles (aka sample names)
+# AND, the column that you want to merge by below (currently "ID"; all caps) MUST match 'miss'
+sample_info_uce <- read.csv("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/UCE/sample_info_tissueUCEs.csv") 
+# Load in tissue UCE file: sample_info_tissueUCEs.csv
+# Load in good UCEs file: sample_info_goodUCEs.csv
+# Load data for placing Type 1, AMNH 37501: sample_info_subsetUCEs_placingType1_AMNH37501
+# Load data for placing Type 2, AMNH 37500: sample_info_subsetUCEs_placingType2_AMNH37500
+# Load data for placing both types:sample_info_subsetUCEs_PlacingBothTypes
+# Data for placing AMNH803397: sample_info_subsetUCEs_PlacingAMNH803397.csv
+
+## assess missing data for each sample
+miss <- snpgdsSampMissRate(uce.genofile, sample.id=NULL, snp.id=NULL, with.id=TRUE)
+miss <- as.data.frame(miss)
+miss <- setDT(miss,keep.rownames=TRUE)[]
+colnames(miss) <- c("ID", "missing")
+miss_merge <- merge(miss, sample_info_uce, by="ID") # Need to see Stepfanie's file
+miss_output_uce <- select(miss_merge, ID, missing, country) # Make this whatever you want
+
+## write missing data to file
+#write.table(miss_output,"./RSFL-YSFL_WGS_m80_d3_missing.txt", sep="\t", quote=FALSE, row.names=TRUE)
+
+## run PCA using SNPRelate
+pca.uce <- snpgdsPCA(gdsobj=uce.genofile, 
+                 autosome.only=FALSE, 
+                 sample.id=NULL)
+
+## get percent variation explained for each PC axis
+pc.percent.uce <- pca.uce$varprop*100
+head(round(pc.percent.uce, 2))
+
+## pull sample ID + first four PC axes
+pca_coords_uce <- data.frame(ID = pca.uce$sample.id,
+                         pc1 = pca.uce$eigenvect[,1],    # the first eigenvector
+                         pc2 = pca.uce$eigenvect[,2],    # the second eigenvector
+                         pc3 = pca.uce$eigenvect[,3],
+                         pc4 = pca.uce$eigenvect[,4],
+                         stringsAsFactors = FALSE)
+head(pca_coords_uce)
+
+## merge PCA results with sample info by ID number
+pca_coords_merged_uce <- merge(pca_coords_uce, sample_info_uce, by.x="ID")
+
+
+## figure colors  (this is a mess, leaving for now)
+fig_colors <- c("#FFFF00","navajowhite4")
+# For tissue UCEs: Ecuador (yellow), Peru (brown)
+
+fig_colors <- c("turquoise3","purple3", "#FFFF00","navajowhite4")
+# For good UCEs: Argentina (turquoise), Bolivia (purple), Ecuador (yellow), Peru (brown)
+
+# Placing types
+fig_colors <- c("turquoise3","purple3", "#FFFF00","navajowhite4", "black")
+# Argentina (turquoise), Bolivia (purple), Ecuador (yellow), Peru (brown), Whitely (black)
+
+# Placing types - ultra streamlind
+fig_colors <- c("#FFFF00", "navajowhite4","purple3", "red")
+# Hybrid?! (yellow), Northern (brown), Southern (purple), Whitely (red)
+
+north_south_colors <- c("red", "turquoise3", "navajowhite4")
+# For good UCEs: Argentina (turquoise), Bolivia (purple), Ecuador (yellow), Peru (brown)
+
+fig_colors_hybridpink <- c("#F708CA", "#00C5CD", "#8B795E")
+# hybrid=pink, northern=teal, southern=brown 
+
+
+## TISSUE UCE PLOT scatterplot of PC1 versus PC2
+pdf(file="UCE_TissueUCEs_100PercentComplete_ColorByLineage_PC1-2_2023-04-12.pdf", width=3, height=3) # Write plot to pdf 
+pca_scatter1_2 <- ggplot() +
+  geom_hline(aes(yintercept=0), color="gray") +
+  geom_vline(aes(xintercept=0), color="gray") +
+  geom_point(data=pca_coords_merged_uce, aes(x=pc1, y=pc2, fill=Haplotype), size=4, alpha=0.75, shape=21, stroke=0.2) +
+  #geom_text(aes(label=pca_coords_merged_uce$identifier),hjust=0,vjust=0) + 
+  # geom_label_repel(aes(x=pca_coords_merged_uce$pc1, y=pca_coords_merged_uce$pc2, label=pca_coords_merged_uce$identifier),
+  #                 box.padding=0.25, point.padding=0.1, segment.color='grey50', max.overlaps=25) +
+  labs(x="PC1 (40.04%)", y="PC2 (3.07%)") +
+  scale_fill_manual(values=fig_colors_hybridpink) +
+ # scale_x_continuous(limits = c(-0.0005, 0.0005)) + 
+  theme_classic() +
+ # ggtitle("Tissue UCE data (100% complete matrix; 4,126 SNPS), PC1 & 2, color=country") +
+  theme(legend.position="none", axis.line=element_line(color="black"), axis.title=element_text(face="bold",size=10), axis.text=element_text(size=10,color="black"))
+pca_scatter1_2
+dev.off()
+
+## TISSUE UCE: scatterplot of PC3 versus PC4
+pdf(file="UCE_TissueUCEs_100PercentComplete_ColorByCountry_PC3-4_2023-04-12.pdf", width=3, height=3) # Write plot to pdf
+pca_scatter3_4 <- ggplot() +
+  geom_hline(aes(yintercept=0), color="gray") +
+  geom_vline(aes(xintercept=0), color="gray") +
+  geom_point(data=pca_coords_merged_uce, aes(x=pc3, y=pc4, fill=Haplotype), size=4, alpha=0.75, shape=21, stroke=0.2) +
+  # geom_label_repel(aes(x=pca_coords_merged_uce$pc3, y=pca_coords_merged_uce$pc4, label=pca_coords_merged_uce$identifier),
+  #                 box.padding=0.25, point.padding=0.1, segment.color='grey50', max.overlaps=25) +
+  labs(x="PC3 (2.98%)", y="PC4 (2.62%)") + 
+  scale_fill_manual(values=fig_colors_hybridpink) +
+  theme_classic() +
+#  ggtitle("Tissue UCE data (100% complete matrix; 4,126 SNPS), PC3 & 4, color=country") +
+  theme(legend.position="right", axis.line=element_line(color="black"), axis.title=element_text(face="bold",size=12), axis.text=element_text(size=10,color="black"))
+pca_scatter3_4
+dev.off()
+
+## CLOSE UCE GENOFILE WHEN DONE 
+closefn.gds(uce.genofile)
+```
+
+
+---
+
+
+# Print environment for reproducibility
+```{r}
+sessionInfo() # List of packages and versions in use 
+```
+
+###########
+
+## END 
