@@ -1,0 +1,2458 @@
+---
+title: "Patagona Morpho Analysis"
+author: "Jessie Williamson"
+date: "2/14/2018; last revised 2024-04-15"
+output: html_document
+---
+
+Morpho analyses in Williamson et al. 2024, giant hummingbirds, *PNAS*. 
+
+
+```{R, echo=FALSE}
+# I set some GLOBAL R chunk options here.
+#   (to hide this message add "echo=FALSE" to the code chunk options)
+
+knitr::opts_chunk$set(comment = NA, message = FALSE, warning = FALSE, width = 100)
+knitr::opts_chunk$set(fig.align = "center", fig.height = 4, fig.width = 6)
+
+#knitr::opts_chunk$set(cache = TRUE, autodep=TRUE)
+knitr::opts_chunk$set(cache = TRUE, autodep=TRUE)
+```
+
+---
+```{R}
+setwd("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona")
+```
+
+# Load packages
+```{R}
+# graph packages - Run these first 
+library(reshape)
+library(car)
+library(GGally)
+library(Hmisc)
+library(gridExtra)
+library(stats)
+library(gplots)
+library(ggplot2)
+library(lsmeans)
+library(effects)
+library(plyr)
+library(dplyr)
+library(gridExtra)
+library(lattice)
+library(survival)
+library(AICcmodavg)
+library(MuMIn)
+library(stats4) # Knitr stopped working and asked me to add this - not sure what it does
+library(PMCMR) #Allows Kruskal-Wallis post-hocs
+library(fmsb)
+library(faraway)
+library(reshape2)
+library(popbio)
+library(arm)
+library(ggfortify) # PCA
+library(adegenet)
+library(cluster)
+library(plyr)
+library(ape)
+library(ggsignif)
+library(MASS)
+library(ggbeeswarm)
+library(nortest) # For Anderson-Darling test
+library(ggdist)
+library(patchwork)
+
+# For PCA
+library(devtools)
+# install_github("vqv/ggbiplot", force=TRUE) # Force re-install ggbiplot from github if being wonky
+library(ggbiplot)
+```
+
+---
+
+# Load in data 
+```{R}
+# Load functions 
+source("ada_functions.R") # Erik's ADA functions for clean & collated lm diag plots
+source("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/ComparativeHummingbirdBlood/1_r_scripts/Rfunctions.R") 
+
+# Read in data
+morpho <- read.csv("WilliamsonEtAl2024_PNAS_patagona_morpho_dryad.csv", na.strings = c("", "NA"), stringsAsFactors = TRUE)
+morpho <- morpho[ , !(colnames(morpho) %in% c("X"))] 
+```
+
+
+# Select only morpho data you'll use in analyses 
+```{r}
+# The order that you write these in here is the order they'll appear in once subsetted
+morphosub <- subset(morpho, select = -c(hb,
+                                        hct,
+                                        hct.percent,
+                                        trbc,
+                                        mcv,
+                                        mch,
+                                        mchc,
+                                        elev.original, # We use elev.final
+                                        elevation_geonames # We use elev.final
+                                        ) )
+```
+
+
+# Inspect the data and remove juveniles
+We handle juvenile values for morphology data differently than blood data. 
+Essentially: Blood data values are anomalous in in nestlings and fledglings and normalize quickly within a few months of fledging. So for blood data, juvenile values that fall within the normal range of adult values should be considered valid. 
+**HOWEVER**, juvenile morphological measurements *are* different from adults; and we don't want to work with these in our morphology data, so we'll drop them straightaway. 
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+# Let's first look at our data colored by age 
+# p <- ggpairs(morphosub[ ,c("mass", "bill", "wing", "tail","tarsus", "age")],
+#             mapping=ggplot2::aes(colour=morphosub$age), lower=list(continuous="smooth"),
+#             diag = list(continuous = "density")) #, upper = list(params = list(corSize = 6)) )
+# print(p)
+
+# Drop juveniles 
+morphosub <- morphosub[-which(morphosub$age == "juvenile"),] # Now 289 observations (i.e., dropped 72 juveniles)
+```
+
+
+
+# Assess outliers remaining (after removing juveniles)
+```{r}
+# Take a look at all data
+p <- ggpairs(subset(morphosub, select = c(mass, bill, wing, tail, tailfork, tarsus))); print(p)
+# Elev is bimodal (unsurprising); Mass is a litte heavy tailed; blood traits a little heavy tailed too.
+
+# Generally, these look really good. I don't think any need to be transformed, but that could change. 
+qqPlot(morphosub$mass) # Fantastic; only single outlier (31-g bird).
+q1 <- qqPlot(morphosub$bill); q1 # No outliers; looks fantastic
+#q2 <- qqPlot(morphosub$skull); q2 # Two super low outliers
+q3 <- qqPlot(morphosub$wing); q3 # Looks fantastic
+q4 <- qqPlot(morphosub$tail); q4 # One low outlier but other wise great
+q5 <- qqPlot(morphosub$tailfork); q5 # Looks great
+q6 <- (qqPlot(morphosub$tarsus)); q6 # Looks fantastic 
+```
+
+
+Examine trait distributions. 
+
+
+
+# Big red flag outlier analysis 
+```{r}
+# We really only have one outlier to drop and that's the super short tail bird, so we'll do that now: 
+morphosub <- morphosub[-which(morphosub$identifier =="252131"),]  # short tail bird 
+morphosub <- morphosub[-which(morphosub$identifier =="172301"),]  # Huge 31 g monster mass outlier
+```
+
+
+# Remove outliers
+Note that I took the more conservative approach above, especially after assessing distributions; so commented these out
+```{r}
+# REMOVE OUTLIERS 
+#morphosub <- morphosub[-which(morphosub$mass < 15 | morphosub$mass > 31),] 
+#morphosub <- morphosub[-which(morphosub$bill < 30 | morphosub$bill > 43),] # 5 outliers
+#morphosub <- morphosub[-which(morphosub$wing < 110 | morphosub$wing > 143),] # 2 outliers
+#morphosub <- morphosub[-which(morphosub$tail < 70 | morphosub$tail > 92),] # # 1 outlier
+#morphosub <- morphosub[-which(morphosub$tailfork < 0 | morphosub$tailfork > 26),] # NO OUTLIERS
+#morphosub <- morphosub[-which(morphosub$tarsus < 7 | morphosub$tarsus > 12),] # 2 outliers 
+
+# Dataset contains 344 observations
+
+# Check distributions of traits and revise as necessary 
+# p <- ggpairs(subset(bloodsub, select = c(elev.final, mass, hb))); print(p)
+# p <- ggpairs(subset(bloodsub, select = c(elev.final, mass, hct.percent))); print(p)
+# p <- ggpairs(subset(bloodsub, select = c(elev.final, mass, trbc))); print(p)
+# p <- ggpairs(subset(bloodsub, select = c(elev.final, mass, mcv))); print(p)
+# p <- ggpairs(subset(bloodsub, select = c(elev.final, mass, mch))); print(p)
+# p <- ggpairs(subset(bloodsub, select = c(elev.final, mass, mchc))); print(p)
+
+# All distributions look fantastic
+
+#p <- ggpairs(subset(morphosub, select = c(mass, bill, wing, tail, tailfork, tarsus))); print(p)
+```
+
+
+
+# Calculate morphology to body mass ratios
+```{r}
+# Morpho measurements relative to mass
+morphosub$rel.wing <- morphosub$wing/morphosub$mass
+morphosub$rel.bill <- morphosub$bill/morphosub$mass
+morphosub$rel.tail <- morphosub$tail/morphosub$mass
+morphosub$rel.tarsus <- morphosub$tarsus/morphosub$mass
+
+# And logs
+morphosub$log.wing <- log10(morphosub$wing)
+morphosub$log.mass <- log10(morphosub$mass)
+```
+
+
+# More organizing and re-leveling
+Drop hybrids and NA (unknown) lineage birds; re-level for plotting. 
+```{r}
+# Drop the two hybrid birds from analysis and all NA lineages (unknowns)
+morphosub <- morphosub[-which(morphosub$analysis.lineage == "hybrid"),] # Now 286 observations
+morphosub <- morphosub[-which(is.na(morphosub$analysis.lineage)),] # Now 278 observations
+
+#  Relevel factor so order shows up as you want in plots 
+str(morphosub$analysis.lineage)
+morphosub$analysis.lineage <- factor(morphosub$analysis.lineage, levels = c("southern", "northern")) 
+levels(morphosub$analysis.lineage)
+```
+
+
+
+## 6-PANEL BOX PLOTS TO SHOW DIFFS BETWEEN NORTHERN AND SOUTHERN (THESE ARE PLOTS IN THE PAPER!!)
+Note that these are the same plots as above but formatted differently for Figure 3 (currently morpho fig) in the paper. 
+Formatted such that Jillian's Patagona illustrations can go in the center. 
+```{r}
+library(ggbeeswarm)
+
+# Subset by just N and S for mass by sex plots
+morphon <- morphosub[which(morphosub$analysis.lineage =="northern"),] # 162 Northerns
+morphos <- morphosub[which(morphosub$analysis.lineage =="southern"),] # 116 Southerns
+
+
+# Box plot of mass
+(box.mass <- ggplot(subset(morphosub, analysis.lineage %in% c("northern", "southern")), aes(x=analysis.lineage, y=mass)) +
+       # facet_wrap(~sex, nrow=2) + 
+        geom_quasirandom(aes(color=analysis.lineage)) + 
+        scale_color_manual(values = c("#8B795E", "#00C5CD")) + # northern=teal; southern=brown 
+        geom_boxplot(aes(fill = factor(analysis.lineage)), outlier.size=0.8, alpha=0.7) +
+        scale_x_discrete(labels = c("Southern", "Northern")) + 
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        # Mass comparison isn't significant, so removing this
+        # geom_signif(comparisons = list(c("southern", "northern")), # List pairwise comparisons in the order you want sig to appear
+        #             y_position=c(27), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+        #             map_signif_level=TRUE, tip_length=0.005) +
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#8B795E", "#00C5CD")) + # northern=teal; southern=brown 
+        coord_cartesian(ylim = c(16, 27.7)) + # Necessary to keep ggsignif askterisks in plot boundaries; get this range w/in data range
+        labs(y="Mass (g)", # Hella confusing formatting for x and y axis labels 
+             x="Lineage") +
+        ggtitle("A") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+        #theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=14), axis.text.x=element_text(size=12), axis.title=element_text(size=12))
+)
+ggsave(box.mass, filename="BoxPlot_Morpho_Lineage_vs_Mass_2023-10-17.pdf", height=7, width=9, units="in")
+# No significant differences in mass length between north and south 
+
+# Panel B: Box Plot: Northern Mass
+(box.mass.sex.n <- ggplot(subset(morphon, sex %in% c("female", "male")), aes(x=sex, y=mass)) +
+       # facet_wrap(~analysis.lineage, nrow=2) + 
+        geom_quasirandom(aes(color=sex)) + 
+        scale_color_manual(values = c("#F21414", "#D2A6F7")) + 
+        geom_boxplot(aes(fill = factor(sex)), outlier.size=0.8, alpha=0.7) +
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("female", "male")), # List pairwise comparisons in the order you want sig to appear
+                    y_position=c(26.4), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.02) +  
+       # stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        #scale_fill_manual(values = c("#7B24EF", "#58C1AB")) + # green males, purple females
+        scale_fill_manual(values = c("#F21414", "#D2A6F7")) + # pink males, red females
+        coord_cartesian(ylim = c(16, 27.7)) + # Necessary to keep ggsignif askterisks in plot boundaries; get this range w/in data range
+        labs(y="Mass (g)", # Hella confusing formatting for x and y axis labels 
+             x="Northern") +
+        ggtitle("B") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2, 0.2, 0.2, 0.2), "cm")) +  # top, right, bottom, left    
+       # theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=14), axis.text.x=element_text(size=12), axis.title=element_text(size=12))
+)
+ggsave(box.mass.sex.n, filename="BoxPlot_MorphoN_Sex_vs_Mass_2023-10-17.pdf", height=7, width=9, units="in")
+
+
+# Panel C: Box Plot: Southern Mass
+(box.mass.sex.s <- ggplot(subset(morphos, sex %in% c("female", "male")), aes(x=sex, y=mass)) +
+       # facet_wrap(~analysis.lineage, nrow=2) + 
+        geom_quasirandom(aes(color=sex)) + 
+        scale_color_manual(values = c("#F21414", "#D2A6F7")) + 
+        geom_boxplot(aes(fill = factor(sex)), outlier.size=0.8, alpha=0.7) +
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("female", "male")), # List pairwise comparisons in the order you want sig to appear
+                    y_position=c(26.4), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.02) +  
+       # stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        #scale_fill_manual(values = c("#7B24EF", "#58C1AB")) + # green males, purple females
+        coord_cartesian(ylim = c(16, 27.7)) + # Necessary to keep ggsignif askterisks in plot boundaries; get this range w/in data range
+        scale_fill_manual(values = c("#F21414", "#D2A6F7")) + # pink males, red females
+        labs(y="Mass (g)", # Hella confusing formatting for x and y axis labels 
+             x="Southern") +
+        ggtitle("C") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+       # theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=14), axis.text.x=element_text(size=12), axis.title=element_text(size=12))
+)
+ggsave(box.mass.sex.s, filename="BoxPlot_MorphoS_Sex_vs_Mass_2023-10-17.pdf", height=7, width=9, units="in")
+
+
+# COMBINE Mass into 2-panel fig: 
+library(patchwork)
+Morpho_Mass_NvsS_and_MalevsFemale_Plots <- (box.mass + box.mass.sex.n / box.mass.sex.s)
+print(Morpho_Mass_NvsS_and_MalevsFemale_Plots)
+ggsave(Morpho_Mass_NvsS_and_MalevsFemale_Plots, filename = "Morpho_Mass_NvsS_and_MalevsFemale_Plots_2023-10-17_4Wby6H.pdf", bg="transparent", height=4, width=6, units="in")
+# ideal raw size: 5.5 height x 7.5 width 
+# Export as 4 height and 6 width, scale to 130% size in Illustrator
+
+# Sizing notes 
+# 5.5 height and 7.5 width was perfect, but points looked too small; I liked older look of points being a little larger, so I'm going to try
+# making plot small and then changing size in Illustrator
+# 4.5 x 6.5 wasn't quite long enough or wide enough
+# 6 x 8 was too wide (overlapped with patagona specimens, and a little too tall)
+
+
+# Panel D: Box plot of tarsus 
+(box.tarsus <- ggplot(subset(morphosub, analysis.lineage %in% c("northern", "southern")), aes(x=analysis.lineage, y=tarsus)) +
+       # facet_wrap(~sex, nrow=2) + 
+        geom_quasirandom(aes(color=analysis.lineage)) + 
+        scale_color_manual(values = c("#8B795E", "#00C5CD")) + # northern=teal; southern=brown 
+        geom_boxplot(aes(fill = factor(analysis.lineage)), outlier.size=0.8, alpha=0.7) +
+        scale_x_discrete(labels = c("Southern", "Northern")) + 
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("southern", "northern")), # List pairwise comparisons in the order you want sig to appear
+                    y_position=c(13.5), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.02) +
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        coord_cartesian(ylim = c(7, 14)) + # Necessary to keep ggsignif askterisks in plot boundaries; get this range w/in data range
+        scale_fill_manual(values = c("#8B795E", "#00C5CD")) + # northern=teal; southern=brown
+        labs(y="Tarsus (mm)", # Hella confusing formatting for x and y axis labels 
+             x="Lineage") +
+        ggtitle("D") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+        #theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=14), axis.text.x=element_text(size=12), axis.title=element_text(size=12))
+)
+ggsave(box.tarsus, filename="BoxPlot_Morpho_Lineage_vs_Tarsus_2023-10-17.pdf", height=4, width=3, units="in")
+# Remember you want this to be approx 50% the width of the 4 height and 6 width 2-panel fig above
+
+
+# Panel E: Box plot of bill
+(box.bill <- ggplot(subset(morphosub, analysis.lineage %in% c("northern", "southern")), aes(x=analysis.lineage, y=bill)) +
+       # facet_wrap(~sex, nrow=2) + 
+        geom_quasirandom(aes(color=analysis.lineage)) + 
+        scale_color_manual(values = c("#8B795E", "#00C5CD")) + # northern=teal; southern=brown 
+        geom_boxplot(aes(fill = factor(analysis.lineage)), outlier.size=0.8, alpha=0.7) +
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        scale_x_discrete(labels = c("Southern", "Northern")) + 
+        geom_signif(comparisons = list(c("southern", "northern")), # List pairwise comparisons in the order you want sig to appear
+                    y_position=c(44), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.02) +
+        coord_cartesian(ylim = c(30, 45)) + # Necessary to keep ggsignif askterisks in plot boundaries; get this range w/in data range
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#8B795E", "#00C5CD")) + # northern=teal; southern=brown 
+        labs(y="Bill Length (mm)", # Hella confusing formatting for x and y axis labels 
+             x="Lineage") +
+        ggtitle("F") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+        #theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=14), axis.text.x=element_text(size=12), axis.title=element_text(size=12))
+)
+ggsave(box.bill, filename="BoxPlot_Morpho_Lineage_vs_Bill_2023-10-17.pdf", height=7, width=9, units="in")
+
+
+# Panel F: Box plot of wing 
+(box.wing <- ggplot(subset(morphosub, analysis.lineage %in% c("northern", "southern")), aes(x=analysis.lineage, y=wing)) +
+       # facet_wrap(~sex, nrow=2) + 
+        geom_quasirandom(aes(color=analysis.lineage)) + 
+        scale_color_manual(values = c("#8B795E", "#00C5CD")) + # northern=teal; southern=brown 
+        geom_boxplot(aes(fill = factor(analysis.lineage)), outlier.size=0.8, alpha=0.7) +
+        scale_x_discrete(labels = c("Southern", "Northern")) + 
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("southern", "northern")), # List pairwise comparisons in the order you want sig to appear
+                    y_position=c(148), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.02) +   
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        coord_cartesian(ylim = c(108, 150)) + # Necessary to keep ggsignif askterisks in plot boundaries; get this range w/in data range
+        scale_fill_manual(values = c("#8B795E", "#00C5CD")) + # northern=teal; southern=brown
+        labs(y="Wing Chord (mm)", # Hella confusing formatting for x and y axis labels 
+             x="Lineage") +
+        ggtitle("G") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+        #theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=14), axis.text.x=element_text(size=12), axis.title=element_text(size=12))
+)
+ggsave(box.wing, filename="BoxPlot_Morpho_Lineage_vs_Wing_2023-10-17.pdf", height=7, width=9, units="in")
+ 
+# COMBINE bill and wing into 2-panel fig: 
+# #library(patchwork)
+Morpho_Bill_and_Wing_Plots <- (
+                    box.bill + box.wing
+                    )
+print(Morpho_Bill_and_Wing_Plots)
+ggsave(Morpho_Bill_and_Wing_Plots, filename = "Morpho_Morpho_Bill_and_Wing_Plots_Plots_2023-10-17_4Wby6H.pdf", bg="transparent", height=4, width=6, units="in")
+# ideal: 5.5 height x 7.5 width 
+
+# Sizing notes 
+# 5.5 height and 7.5 width was perfect, but points looked too small; I liked older lok of poitns being a little larger, so I'm going to try
+# making plot small and then changing size in Illustrator
+# 4.5 x 6.5 wasn't quite long enough or wide enough
+# 6 x 8 was too wide (overlapped with patagona specimens, and a little too tall)
+
+# Box plot of tail 
+(box.tail <- ggplot(subset(morphosub, analysis.lineage %in% c("northern", "southern")), aes(x=analysis.lineage, y=tail)) +
+       # facet_wrap(~sex, nrow=2) + 
+        geom_quasirandom(aes(color=analysis.lineage)) + 
+        scale_color_manual(values = c("#8B795E", "#00C5CD")) + # northern=teal; southern=brown 
+        geom_boxplot(aes(fill = factor(analysis.lineage)), outlier.size=0.8, alpha=0.7) +
+        scale_x_discrete(labels = c("Southern", "Northern")) + 
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("southern", "northern")), # List pairwise comparisons in the order you want sig to appear
+                    y_position=c(92), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.02) +
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        coord_cartesian(ylim = c(69, 93)) + # Necessary to keep ggsignif askterisks in plot boundaries; get this range w/in data range
+        scale_fill_manual(values = c("#8B795E", "#00C5CD")) + # northern=teal; southern=brown
+        labs(y="Tail Length (mm)", # Hella confusing formatting for x and y axis labels 
+             x="Lineage") +
+        ggtitle("H") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+        #theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=14), axis.text.x=element_text(size=12), axis.title=element_text(size=12))
+)
+ggsave(box.tail, filename="BoxPlot_Morpho_Lineage_vs_Tail_2023-10-17_4Wby6H.pdf", height=4, width=3, units="in")
+# Remember you want this to be approx 50% the width of the 4 height and 6 width 2-panel fig above 
+
+
+# COMBINE ALL PLOTS TO MAKE 6-PANEL FIGURE: 
+#library(patchwork)
+MorphoBoxPlots_6panel_NorthernVsSouthern <- (
+                    box.mass + box.bill + box.skull + box.wing + box.tail + box.tarsus)
+print(MorphoBoxPlots_6panel_NorthernVsSouthern)
+ggsave(MorphoBoxPlots_6panel_NorthernVsSouthern, filename = "MorphoBoxPlots_6-panel_NorthernVsSouthern_2023-10-17.pdf", bg="transparent", height=8, width=11, units="in")
+
+# Take homes: 
+# No significant differences in mass length between north and south 
+# Highly significant differences in bill length between N and S forms; northern have much, much larger bills
+# Highly significant differences in wing chord; northern have much longer wings
+        # **interesting bc long-distance migrants are hypothesized to have longer wings 
+# Significant differences in tail length between N and S; N have longer tails 
+# Significant differnces in tarsus length between N and S; N have larger tarsi
+
+## Taking out: 
+# Panel F: Box plot of Bill plus head
+# (box.skull <- ggplot(subset(morphosub, analysis.lineage %in% c("northern", "southern")), aes(x=analysis.lineage, y=skull)) +
+#        # facet_wrap(~sex, nrow=2) + 
+#         geom_quasirandom(aes(color=analysis.lineage)) + 
+#         scale_color_manual(values = c("#8B795E", "#00C5CD")) + # northern=teal; southern=brown 
+#         geom_boxplot(aes(fill = factor(analysis.lineage)), outlier.size=0.8, alpha=0.7) +
+#         scale_x_discrete(labels = c("Southern", "Northern")) + 
+#         #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+#         geom_signif(comparisons = list(c("southern", "northern")), # List pairwise comparisons in the order you want sig to appear
+#                     y_position=c(72), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+#                     map_signif_level=TRUE, tip_length=0.005) +
+#         #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+#         theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+#         theme(panel.grid.minor = element_blank()) +
+#         scale_fill_manual(values = c("#8B795E", "#00C5CD")) + # northern=teal; southern=brown 
+#         labs(y="Skull Length (mm)", # Hella confusing formatting for x and y axis labels 
+#              x="") +
+#         ggtitle("E") + # Assign panel number/header
+#         theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+#           plot.title = element_text(face="bold")) + # This makes panel header bold 
+#         # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+#         theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+#         #theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+#         theme(legend.position = "none") +
+#         theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=8), axis.title=element_text(size=12))
+# )
+# ggsave(box.skull, filename="BoxPlot_Morpho_Lineage_vs_skull_2023-03-06.pdf", height=7, width=9, units="in")
+```
+
+
+# Now pull sample sizes for each trait for reporting in the paper Methods and Supplement
+```{r}
+# Subset by individual morpho traits 
+mass.sub <- subset(morphosub, select=c(rowID, identifier, museum, country, elev.final, month, year, population, analysis.lineage, sex, age, mass))
+
+tarsus.sub <- subset(morphosub, select=c(rowID, identifier, museum, country, elev.final, month, year, population, analysis.lineage, sex, age, tarsus))
+
+bill.sub <- subset(morphosub, select=c(rowID, identifier, museum, country, elev.final, month, year, population, analysis.lineage, sex, age, bill))
+
+tail.sub <- subset(morphosub, select=c(rowID, identifier, museum, country, elev.final, month, year, population, analysis.lineage, sex, age, tail))
+
+
+# Drop birds of unknown population so we can focus on our clean comparison of AML, AMH, HAR
+mass.sub.mod <- mass.sub[-which(is.na(mass.sub$mass)),] # 167 records 
+tarsus.sub.mod <- tarsus.sub[-which(is.na(tarsus.sub$tarsus)),] # 177 records 
+bill.sub.mod <- bill.sub[-which(is.na(bill.sub$bill)),] # 244 records 
+tail.sub.mod <- tail.sub[-which(is.na(tail.sub$tail)),] # 246 records 
+
+ 
+# Re-level factors so that AML comes before AMH: 
+# (this is also necessary because "unknown" remains as a "shadow level" after dropping; i.e. we want 3 levels, not 4)
+mass.sub.mod$analysis.lineage <- factor(mass.sub.mod$analysis.lineage, levels = c("southern", "northern")) 
+tarsus.sub.mod$analysis.lineage <- factor(tarsus.sub.mod$analysis.lineage, levels = c("southern", "northern")) 
+bill.sub.mod$analysis.lineage <- factor(bill.sub.mod$analysis.lineage, levels = c("southern", "northern")) 
+tail.sub.mod$analysis.lineage <- factor(tail.sub.mod$analysis.lineage, levels = c("southern", "northern")) 
+
+
+# Check levels
+levels(mass.sub.mod$analysis.lineage)
+levels(tarsus.sub.mod$analysis.lineage)
+levels(bill.sub.mod$analysis.lineage)
+levels(tail.sub.mod$analysis.lineage)
+
+
+# Counts for trait and population: 
+table(mass.sub.mod$analysis.lineage)
+# southern northern 
+#       69       98 
+
+table(tarsus.sub.mod$analysis.lineage)
+# southern northern 
+#       72      105
+
+table(bill.sub.mod$analysis.lineage)
+# southern northern 
+#       99      145
+
+table(tail.sub.mod$analysis.lineage)
+# southern northern 
+#      100      146 
+
+
+#### 
+
+# Now do Male and female masses for each Northern and Southern
+# Isolate just birds of known sex (male or female)
+morphon.sub <- morphon[-which(morphon$sex == "unknown"),] # 141 records
+morphos.sub <- morphos[-which(morphos$sex == "unknown"),] # 84 records
+
+# Now drop unkonwn masses 
+morphon.sub.mod <- morphon.sub[-which(is.na(morphon.sub$mass)),] # 82 records
+morphos.sub.mod <- morphos.sub[-which(is.na(morphos.sub$mass)),] # 39 records
+
+
+# Re-level factors so that AML comes before AMH: 
+# (this is also necessary because "unknown" remains as a "shadow level" after dropping; i.e. we want 3 levels, not 4)
+morphon.sub.mod$sex <- factor(morphon.sub.mod$sex, levels = c("female", "male")) 
+morphos.sub.mod$sex <- factor(morphos.sub.mod$sex, levels = c("female", "male")) 
+
+
+# Check levels
+levels(morphon.sub.mod$sex)
+levels(morphos.sub.mod$sex)
+
+# Counts for trait and population: 
+table(morphon.sub.mod$sex)
+# female   male 
+#     48     34
+
+table(morphos.sub.mod$sex)
+# female   male 
+#     25     14
+```
+
+
+
+## STATS 
+
+# MORPHO analysis: 
+```{R}
+# Re-level factors so that AML comes before AMH: 
+# # (this is also necessary because "unknown" remains as a "shadow level" after dropping; i.e. we want 3 levels, not 4)
+# bloodsub.mod$population <- factor(bloodsub.mod$population, levels = c("AML", "AMH", "HAR")) 
+# levels(bloodsub.mod$population)
+
+# Start by breaking data into Northern and Southern for t tests 
+ndat <- morphosub[which(morphosub$analysis.lineage =="northern"),] # 162 observations
+sdat <- morphosub[which(morphosub$analysis.lineage =="southern"),] # 116 observations
+
+# Mass
+# Verify normal distributions (important because F test below is sensitive to non-normality)
+qqPlot(ndat$mass) 
+qqPlot(sdat$mass)
+hist(ndat$mass) 
+hist(sdat$mass)
+
+# Test for normality with Shapiro-Wilk test
+# Note: I much prefer to evaluate normality w/ histograms and qqplots
+with(morphosub, shapiro.test(mass[analysis.lineage == "northern"])) # W = 0.98, p-value = 0.1414
+with(morphosub, shapiro.test(mass[analysis.lineage == "southern"])) # W = 0.96088, p-value = 0.02978
+# Result: p-value >0.05, so data are *not* sig different from normal distribution; aka, they're distributed normally
+
+# Test for equal variances: 
+var.mass <- var.test(mass ~ analysis.lineage, data=morphosub); var.mass
+# Result: p-value for the F-test is <0.05 (our p = 0.006), so there IS a significant difference between the two variances. 
+
+# # Two sample t-test, paired 
+# t.mass <- t.test(mass ~ analysis.lineage, data=morphosub,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     var.equal=FALSE, # verified w/ F-test above
+#                     conf.level=0.95)
+# t.mass
+# t=-0.0782, df=6, p=0.9402; there are no significant differences in masses between deployment and recapture 
+# 95% CI: -3.229 to 3.02
+
+# Since our Southern mass data don't fulfill homogeneity of variances requirement, use nonparametric 
+# Wilcoxon rank sum (aka Mann-Whitney test)
+w.mass <- wilcox.test(mass ~ analysis.lineage, data=morphosub, 
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final) 
+                    conf.int=TRUE,
+                    conf.level=0.95)
+w.mass
+# W = 2837.5, p-value = 0.07755; there is no significant difference in mass between Northerns and Southerns.
+
+# sample estimates:
+# mean in group southern mean in group northern 
+#               20.96232               21.68480   
+
+# There are no significant mass differences between Northern and Southern species (p = 0.07755, Wilcoxon rank sum test)
+
+## -----
+
+# Bill
+# Verify normal distributions (important because F test below is sensitive to non-normality)
+qqPlot(ndat$bill) 
+qqPlot(sdat$bill)
+hist(ndat$bill) 
+hist(sdat$bill)
+
+# Test for normality with Shapiro-Wilk test
+# Note: I much prefer to evaluate normality w/ histograms and qqplots
+with(morphosub, shapiro.test(bill[analysis.lineage == "northern"])) # W = 0.98961, p-value = 0.3584
+with(morphosub, shapiro.test(bill[analysis.lineage == "southern"])) # W = 0.97171, p-value = 0.03127
+# Result: p-value <0.05, so data ARE sig different from normal distribution; aka, they're not distributed normally
+
+# Test for equal variances: 
+var.bill <- var.test(bill ~ analysis.lineage, data=morphosub); var.bill
+# Result: p-value for the F-test is <0.05, so there is a significant difference between the two variances. 
+
+# Two sample t-test, paired 
+# t.bill <- t.test(bill ~ analysis.lineage, data=morphosub,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     var.equal=FALSE, # verified w/ F-test above
+#                     conf.level=0.95)
+# t.bill
+
+# Since our bill data don't fulfill homogeneity of variances requirement, use nonparametric 
+# Wilcoxon rank sum (aka Mann-Whitney test)
+w.bill <- wilcox.test(bill ~ analysis.lineage, data=morphosub, 
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final) 
+                    conf.int=TRUE,
+                    conf.level=0.95)
+w.bill
+# There is a significant difference between bill lengths of Northern and Southern, p=0.00000000000000022 (p < 0.0001, Wilcoxon rank sum)
+#W = 2084.5, p-value < 2.2e-16
+# 95 percent confidence interval: -3.640072 -2.609937
+
+
+# sample estimates:
+# mean in group southern mean in group northern 
+#               35.62637               38.60676 
+#               
+# Northern bill plus is significantly longer than southern (p < 0.0001, Wilcoxon Signed rank)
+# Bills of Northerns are 2.98 mm longer, on average
+
+## -----
+
+### I did not recalculate these during review since these aren't in our paper
+# Skull length
+# Verify normal distributions (important because F test below is sensitive to non-normality)
+qqPlot(ndat$skull) 
+qqPlot(sdat$skull)
+hist(ndat$skull) 
+hist(sdat$skull)
+
+# Test for normality with Shapiro-Wilk test
+# Note: I much prefer to evaluate normality w/ histograms and qqplots
+with(morphosub, shapiro.test(skull[analysis.lineage == "northern"])) # W = 0.96239, p-value = 0.06165
+with(morphosub, shapiro.test(skull[analysis.lineage == "southern"])) # W = 0.92584, p-value = 0.00386
+# Result: p-value >0.05, so data are not sig different from normal distribution; aka, they are not distributed normally
+
+# Test for equal variances: 
+var.skull <- var.test(skull ~ analysis.lineage, data=morphosub); var.skull
+# Result: p-value for the F-test is >0.05, so there is NO significant difference between the two variances. 
+
+# Two sample t-test, paired 
+t.skull <- t.test(skull ~ analysis.lineage, data=morphosub,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    var.equal=FALSE, # verified w/ F-test above
+                    conf.level=0.95)
+t.skull
+
+# Since our Northern skull data don't fulfill homogeneity of variances requirement, use nonparametric 
+# Wilcoxon rank sum (aka Mann-Whitney test)
+# w.skull <- wilcox.test(skull ~ analysis.lineage, data=morphosub, 
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final) 
+#                     conf.int=TRUE,
+#                     conf.level=0.95)
+# w.skull
+# W = 249.5, p-value < 2.2e-16
+
+# sample estimates:
+# mean in group southern mean in group northern 
+#               59.0006                64.6635 
+               
+# Northern bill plus heads are significantly longer than southern bill plus head p < 2.2e-16, (p < 0.0001; t-test). 
+
+## -----
+
+
+# Wing
+# Verify normal distributions (important because F test below is sensitive to non-normality)
+qqPlot(ndat$wing) 
+qqPlot(sdat$wing)
+hist(ndat$wing) 
+hist(sdat$wing)
+
+# Test for normality with Shapiro-Wilk test
+# Note: I much prefer to evaluate normality w/ histograms and qqplots
+with(morphosub, shapiro.test(wing[analysis.lineage == "northern"])) # W = 0.98084, p-value = 0.03901
+with(morphosub, shapiro.test(wing[analysis.lineage == "southern"])) # W = 0.97066, p-value = 0.02485
+# Result: p-value <0.05, so data ARE sig different from normal distribution; aka, they're not distributed normally
+
+# Test for equal variances: 
+var.wing <- var.test(wing ~ analysis.lineage, data=morphosub); var.wing
+# Result: p-value for the F-test is >0.05, so there is NO significant difference between the two variances. 
+
+# Two sample t-test, paired 
+# t.wing <- t.test(wing ~ analysis.lineage, data=morphosub,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     var.equal=FALSE, # verified w/ F-test above
+#                     conf.level=0.95)
+# t.wing
+# t = -6.1049, df = 206.26, p-value = 5.029e-09
+# 95% CI: -7.121692 -3.644734
+
+# Since our Northern wing data don't fulfill homogeneity of variances requirement, use nonparametric 
+# Wilcoxon rank sum (aka Mann-Whitney test)
+w.wing <- wilcox.test(wing ~ analysis.lineage, data=morphosub, 
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final) 
+                    conf.int=TRUE,
+                    conf.level=0.95)
+w.wing
+# W = 3978.5, p-value = 1.318e-09 (1.31x10^-9)
+
+# sample estimates:
+# mean in group southern mean in group northern 
+#               123.1600               128.7671 
+               
+# Northern wings are significantly longer than southern wings p < 1.318e-09, (p < 0.0001; Wilcoxon rank sum test). 
+# Northern wings are 5.6 mm longer, on average
+
+## -----
+
+# Tail
+# Verify normal distributions (important because F test below is sensitive to non-normality)
+qqPlot(ndat$tail) 
+qqPlot(sdat$tail)
+hist(ndat$tail) 
+hist(sdat$tail)
+
+# Test for normality with Shapiro-Wilk test
+# Note: I much prefer to evaluate normality w/ histograms and qqplots
+with(morphosub, shapiro.test(tail[analysis.lineage == "northern"])) # W = 0.98802, p-value = 0.2419
+with(morphosub, shapiro.test(tail[analysis.lineage == "southern"])) # W = 0.97932, p-value = 0.1176
+# Result: p-value >0.05, so data are not sig different from normal distribution; aka, they're distributed normally
+
+# Test for equal variances: 
+var.tail <- var.test(tail ~ analysis.lineage, data=morphosub); var.tail
+# Result: p-value for the F-test is >0.05, so there is no significant difference between the two variances. 
+
+# Two sample t-test, paired 
+t.tail <- t.test(tail ~ analysis.lineage, data=morphosub,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    var.equal=FALSE, # verified w/ F-test above
+                    conf.level=0.95)
+t.tail
+#t = -2.452, df = 221.81, p-value = 0.01498
+# 95% CI: -2.2758853 -0.2476764
+
+# Since our Northern tail data don't fulfill homogeneity of variances requirement, use nonparametric 
+# Wilcoxon rank sum (aka Mann-Whitney test)
+# w.tail <- wilcox.test(tail ~ analysis.lineage, data=morphosub, 
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final) 
+#                     conf.int=TRUE,
+#                     conf.level=0.95)
+# w.tail
+# W = 4003, p-value = 1.909e-07
+
+# sample estimates:
+# mean in group southern mean in group northern 
+#               79.18000               80.44178 
+               
+# Northern tails are significantly longer than southern tails (p = 0.01498; t-test). 
+# Tails of northerns are 1.26 mm longer, on average
+
+## -----
+
+# tarsus
+# Verify normal distributions (important because F test below is sensitive to non-normality)
+qqPlot(ndat$tarsus) 
+qqPlot(sdat$tarsus)
+hist(ndat$tarsus) 
+hist(sdat$tarsus)
+
+# Test for normality with Shapiro-Wilk test
+# Note: I much prefer to evaluate normality w/ histograms and qqplots
+with(morphosub, shapiro.test(tarsus[analysis.lineage == "northern"])) # W = 0.97896, p-value = 0.09362
+with(morphosub, shapiro.test(tarsus[analysis.lineage == "southern"])) # W = 0.97859, p-value = 0.2574
+# Result: p-value >0.05, so data are not sig different from normal distribution; aka, they're distributed normally
+
+# Test for equal variances: 
+var.tarsus <- var.test(tarsus ~ analysis.lineage, data=morphosub); var.tarsus
+# # Result: p-value for the F-test is >0.05, so there is no significant difference between the two variances.
+
+# Two sample t-test, paired 
+t.tarsus <- t.test(tarsus ~ analysis.lineage, data=morphosub,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    var.equal=FALSE, # verified w/ F-test above
+                    conf.level=0.95)
+t.tarsus
+# t = -3.4618, df = 143.17, p-value = 0.0007076
+
+# Since our Northern tarsus data don't fulfill homogeneity of variances requirement, use nonparametric 
+# Wilcoxon rank sum (aka Mann-Whitney test)
+# w.tarsus <- wilcox.test(tarsus ~ analysis.lineage, data=morphosub,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     conf.int=TRUE,
+#                     conf.level=0.95)
+# w.tarsus
+# 
+
+# sample estimates:
+# mean in group southern mean in group northern 
+#               9.624028              10.116000
+               
+# Northern tarsi are significantly longer than southern tarsi (p = 0.0007076; t-test).
+```
+
+
+
+# SUMMARY STATS
+## Summary Stats for Northern. 
+```{r}
+statsum.n <- morphosub[which(morphosub$analysis.lineage == "northern"),] # HAR Peru bird, 162 observations 
+
+# Must specify na.rm=TRUE to deal with NAs in the data 
+
+# Parameter names 
+col1 <- c("Mass", "Bill", "Skull", "Wing", "Tail", "Tarsus")
+
+# Get total sample size per each trait
+# This is janky, but get total number of NA values and then subtract from data frame size to get # observations for each trait
+# This is the piecemeal version
+# nrow(statsum.n) - sum(is.na(statsum.n$mass)) 
+# nrow(statsum.n) - sum(is.na(statsum.n$bill))
+# nrow(statsum.n) - sum(is.na(statsum.n$skull)) 
+# nrow(statsum.n) - sum(is.na(statsum.n$wing))
+# nrow(statsum.n) - sum(is.na(statsum.n$tail)) 
+# nrow(statsum.n) - sum(is.na(statsum.n$tarsus)) 
+
+# Get sample sizes for each trait
+col2 <- c(
+          round(nrow(statsum.n) - sum(is.na(statsum.n$mass)),2), 
+          round(nrow(statsum.n) - sum(is.na(statsum.n$bill)),2), 
+          round(nrow(statsum.n) - sum(is.na(statsum.n$wing)),2), 
+          round(nrow(statsum.n) - sum(is.na(statsum.n$tail)),2), 
+          round(nrow(statsum.n) - sum(is.na(statsum.n$tarsus)),2) 
+          ); col2
+
+
+# Mean values
+col3 <- c(
+          round(mean(statsum.n$mass, na.rm=TRUE),2), 
+          round(mean(statsum.n$bill, na.rm=TRUE),2), 
+          round(mean(statsum.n$wing, na.rm=TRUE),2), 
+          round(mean(statsum.n$tail, na.rm=TRUE),2), 
+          round(mean(statsum.n$tarsus, na.rm=TRUE),2) 
+          ); col3
+
+# Standard deviations 
+col4 <- c(
+          round(sd(statsum.n$mass, na.rm=TRUE),2), 
+          round(sd(statsum.n$bill, na.rm=TRUE),2), 
+          round(sd(statsum.n$wing, na.rm=TRUE),2), 
+          round(sd(statsum.n$tail, na.rm=TRUE),2),
+          round(sd(statsum.n$tarsus, na.rm=TRUE),2) 
+          ); col4
+
+# Range: Min values
+col5 <- c(
+          round(min(statsum.n$mass, na.rm=TRUE),2), 
+          round(min(statsum.n$bill, na.rm=TRUE),2), 
+          round(min(statsum.n$wing, na.rm=TRUE),2), 
+          round(min(statsum.n$tail, na.rm=TRUE),2),
+          round(min(statsum.n$tarsus, na.rm=TRUE),2) 
+          ); col5
+    
+# Range: Max values
+col6 <- c(
+          round(max(statsum.n$mass, na.rm=TRUE),2), 
+          round(max(statsum.n$bill, na.rm=TRUE),2), 
+          round(max(statsum.n$wing, na.rm=TRUE),2), 
+          round(max(statsum.n$tail, na.rm=TRUE),2),
+          round(max(statsum.n$tarsus, na.rm=TRUE),2) 
+          ); col6
+
+# Coefficients of variation  
+# Commented out because this isn't working with NA values in the dataset
+# col7 <- c(
+#           round(cv(statsum.n$mass, na.rm=TRUE),2),
+#           round(cv(statsum.n$bill, na.rm=TRUE),2),
+#           round(cv(statsum.n$skull, na.rm=TRUE),2),
+#           round(cv(statsum.n$wing, na.rm=TRUE),2),
+#           round(cv(statsum.n$tail, na.rm=TRUE),2),
+#           round(cv(statsum.n$tarsus, na.rm=TRUE),2)
+#           ); col7
+
+StatSumTable.Northern <- as.data.frame(cbind(col1, col2, col3, col4, col5, col6)); StatSumTable.Northern
+colnames(StatSumTable.Northern) <- c("Parameter", "n", "Mean", "Standard_Deviation", "Min", "Max")
+
+# Convert structures (all are characters, weirdly)
+str(StatSumTable.Northern)
+StatSumTable.Northern$Mean <- as.numeric(StatSumTable.Northern$Mean)
+StatSumTable.Northern$Standard_Deviation <- as.numeric(StatSumTable.Northern$Standard_Deviation)
+StatSumTable.Northern$Min <- as.numeric(StatSumTable.Northern$Min)
+StatSumTable.Northern$Max <- as.numeric(StatSumTable.Northern$Max)
+
+StatSumTable.Northern$cv <- round(((StatSumTable.Northern$Standard_Deviation)/(StatSumTable.Northern$Mean)), 2)
+# some weird character/string formatting going on, but I got the values I want for wrangling into Word format
+
+#write.csv(StatSumTable.Northern, "TableS4_MorphologicalSummaryValues_Northerns_2023-10-17.csv")
+  # Currently part of Table S4 in paper
+```
+
+
+## Summary Stats for Southern
+```{r}
+statsum.s <- morphosub[which(morphosub$analysis.lineage =="southern"),] # 116 observations 
+
+# Must specify na.rm=TRUE to deal with NAs in the data 
+
+# Parameter names 
+col1 <- c("Mass", "Bill", "Skull", "Wing", "Tail", "Tarsus")
+
+# Get total sample size per each trait
+# This is janky, but get total number of NA values and then subtract from data frame size to get # observations for each trait
+# This is the piecemeal version
+# nrow(statsum.s) - sum(is.na(statsum.s$mass)) 
+# nrow(statsum.s) - sum(is.na(statsum.s$bill))
+# nrow(statsum.s) - sum(is.na(statsum.s$skull)) 
+# nrow(statsum.s) - sum(is.na(statsum.s$wing))
+# nrow(statsum.s) - sum(is.na(statsum.s$tail)) 
+# nrow(statsum.s) - sum(is.na(statsum.s$tarsus)) 
+
+# Get sample sizes for each trait
+col2 <- c(
+          round(nrow(statsum.s) - sum(is.na(statsum.s$mass)),2), 
+          round(nrow(statsum.s) - sum(is.na(statsum.s$bill)),2), 
+          round(nrow(statsum.s) - sum(is.na(statsum.s$wing)),2), 
+          round(nrow(statsum.s) - sum(is.na(statsum.s$tail)),2), 
+          round(nrow(statsum.s) - sum(is.na(statsum.s$tarsus)),2) 
+          ); col2
+
+
+# Mean values
+col3 <- c(
+          round(mean(statsum.s$mass, na.rm=TRUE),2), 
+          round(mean(statsum.s$bill, na.rm=TRUE),2), 
+          round(mean(statsum.s$wing, na.rm=TRUE),2), 
+          round(mean(statsum.s$tail, na.rm=TRUE),2), 
+          round(mean(statsum.s$tarsus, na.rm=TRUE),2) 
+          ); col3
+
+# Standard deviations 
+col4 <- c(
+          round(sd(statsum.s$mass, na.rm=TRUE),2), 
+          round(sd(statsum.s$bill, na.rm=TRUE),2), 
+          round(sd(statsum.s$wing, na.rm=TRUE),2), 
+          round(sd(statsum.s$tail, na.rm=TRUE),2),
+          round(sd(statsum.s$tarsus, na.rm=TRUE),2) 
+          ); col4
+
+# Range: Min values
+col5 <- c(
+          round(min(statsum.s$mass, na.rm=TRUE),2), 
+          round(min(statsum.s$bill, na.rm=TRUE),2), 
+          round(min(statsum.s$wing, na.rm=TRUE),2), 
+          round(min(statsum.s$tail, na.rm=TRUE),2),
+          round(min(statsum.s$tarsus, na.rm=TRUE),2) 
+          ); col5
+    
+# Range: Max values
+col6 <- c(
+          round(max(statsum.s$mass, na.rm=TRUE),2), 
+          round(max(statsum.s$bill, na.rm=TRUE),2), 
+          round(max(statsum.s$wing, na.rm=TRUE),2), 
+          round(max(statsum.s$tail, na.rm=TRUE),2),
+          round(max(statsum.s$tarsus, na.rm=TRUE),2) 
+          ); col6
+
+# Coefficients of variation  
+# Commented out because this isn't working with NA values in the dataset
+# col7 <- c(
+#           round(cv(statsum.s$mass, na.rm=TRUE),2),
+#           round(cv(statsum.s$bill, na.rm=TRUE),2),
+#           round(cv(statsum.s$skull, na.rm=TRUE),2),
+#           round(cv(statsum.s$wing, na.rm=TRUE),2),
+#           round(cv(statsum.s$tail, na.rm=TRUE),2),
+#           round(cv(statsum.s$tarsus, na.rm=TRUE),2)
+#           ); col7
+
+StatSumTable.Southern <- as.data.frame(cbind(col1, col2, col3, col4, col5, col6)); StatSumTable.Southern
+colnames(StatSumTable.Southern) <- c("Parameter", "n", "Mean", "Standard_Deviation", "Min", "Max")
+
+# Convert structures (all are characters, weirdly)
+str(StatSumTable.Southern)
+StatSumTable.Southern$Mean <- as.numeric(StatSumTable.Southern$Mean)
+StatSumTable.Southern$Standard_Deviation <- as.numeric(StatSumTable.Southern$Standard_Deviation)
+StatSumTable.Southern$Min <- as.numeric(StatSumTable.Southern$Min)
+StatSumTable.Southern$Max <- as.numeric(StatSumTable.Southern$Max)
+
+StatSumTable.Southern$cv <- round(((StatSumTable.Southern$Standard_Deviation)/(StatSumTable.Southern$Mean)), 2)
+# some weird character/string formatting going on, but I got the values I want for wrangling into Word format
+
+#write.csv(StatSumTable.Southern, "TableS4_MorphologicalSummaryValues_Southerns_2023-10-17.csv")
+  # Currently part of Table S4 in paper
+```
+
+
+# Wing Chord and elevation - Figure S10
+A surprising result is that Southern migrants have SHORTER wings (by 5.4 mm, on average!) than high elevation residents. This is surprising because we would expect that long-distance migrants have longer wings. In our paper, we hypothesize that wing length may be optimized for competitive performance on the breeding grounds, rather than endurance flight. 
+
+We also know that high elevation hummingbirds compensate for reduced air density by increasing wing size. Do we see a signal of increased wing size with increasing elevation? Let's look. 
+```{r}
+wing.elev.n.r2 <- glm(wing ~ elev.final, data=statsum.n, family=gaussian())
+summary(wing.elev.n.r2)
+round((1 - (wing.elev.n.r2$deviance/wing.elev.n.r2$null.deviance)),2) # R^2 = 0.06
+# There is a significant positive relationship between wing length and elevation in Northern residents (p = 0.003, linear model)
+
+# Scatterplot: Wing v. elev of Northern Residents
+(wings.elev.n <- ggplot(subset(statsum.n), aes(x=elev.final, y=wing, colour=analysis.lineage)) + # Add shape=Clade here to get shapes to work properly
+  geom_point(size=1.6, alpha=0.8) +
+   scale_color_manual(values = c("#00C5CD")) + 
+  geom_smooth(method = "lm", formula = y ~ x, colour="black", size=1.5) + # line used to be dark turquoise
+  theme_classic() + 
+  labs(x="Elevation (m)", # Removed "Elevation (m)" because we don't want Panel A to have label
+       y="Wing Chord (mm)") +
+  theme(legend.position = "none") +
+  annotate("text", x=4200, y=145, size=3.5, label = "italic(R) ^ 2==0.06", parse = TRUE) + # R^2 from full model
+  #ggtitle("C") + # Assign panel number/header; this will be (a) because first in series of 3
+  theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+         plot.title = element_text(face="bold")) + # This makes panel header bold 
+       # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+  theme(plot.margin = unit(c(0.0,right=0.2,0.0,0.2), "cm")) +  # top, right, bottom, left
+  theme(axis.text.y=element_text(size=12), axis.text.x=element_text(size=12), axis.title=element_text(size=14))
+ )
+ggsave(wings.elev.n, filename="Scatterplot_WingChord_by_Elev_NorthernResidents_2023-10-17.pdf", height=5, width=7, units="in")
+
+# I'm missing wing data for 16 birds in this dataset, so wing data from n=146 Northerns is plotted. 
+```
+
+
+# Internal anatomy at altitude among populations 
+Right now a suplementary fig. Organ mass data are available with specimen records in Arctos. 
+```{r}
+library(ggbeeswarm)
+
+# Re-level factors so that AML comes before AMH: 
+# (this is also necessary because "unknown" remains as a "shadow level" after dropping; i.e. we want 3 levels, not 4)
+morphosub$population <- factor(morphosub$population, levels = c("AML", "AMH", "HAR")) 
+levels(morphosub$population)
+## Note that a weakness of this classification scheme of populations is that "AML" doesn't work well for e.g. breeding Bolivia birds
+# that might be Southern but breeding at high elevs in the central part of the range...or for high-breeding Southern Arg birds
+# We don't have any of these birds with internal anatomy data, so it's not such a big deal now (aka, our data allow us to do a Chile vs
+# Peru comparison, essentially), but it's important to note and think about
+
+(box.heart2 <- ggplot(subset(morphosub, population %in% c("AML", "AMH", "HAR")), aes(x=population, y=rel.heart)) +
+       # facet_wrap(~sex, nrow=2) + 
+        geom_quasirandom(aes(color=population)) + 
+        scale_color_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + 
+        geom_boxplot(aes(fill = factor(population)), outlier.size=0.8, alpha=0.7) +
+        scale_x_discrete(labels = c("Southern\n(low)","Southern\n(high)","Northern")) + 
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        # geom_signif(comparisons = list(c("AML", "AMH"), # List pairwise comparisons in the order you want sig to appear
+        #                                c("AMH", "HAR"),
+        #                                c("AML", "HAR")),
+        #             y_position=c(30, 32, 33), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+        #             map_signif_level=TRUE, tip_length=0.005) +
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + # southern low=brown; EM=purple; northern=turquoise
+        labs(y="Relative Heart Mass (% body mass)", # Hella confusing formatting for x and y axis labels 
+             x="Population") +
+        ggtitle("A") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+      #  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # Keep if you want labels angled; else don't keep
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=10), axis.title=element_text(size=12))
+)
+ggsave(box.heart2, filename="BoxPlot_RelHeart_AML-AMH-HAR_2023_11-16.pdf", height=7, width=9, units="in")
+
+# Lung 
+(box.lung2 <- ggplot(subset(morphosub, population %in% c("AML", "AMH", "HAR")), aes(x=population, y=rel.lung)) +
+       # facet_wrap(~sex, nrow=2) + 
+        geom_quasirandom(aes(color=population)) + 
+        scale_color_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + 
+        geom_boxplot(aes(fill = factor(population)), outlier.size=0.8, alpha=0.7) +
+        scale_x_discrete(labels = c("Southern\n(low)","Southern\n(high)","Northern")) + 
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("AML", "HAR")), # List pairwise comparisons in the order you want sig to appear
+                              #       c("AMH", "HAR"),
+                              #        c("AML", "AMH")),
+                    y_position=c(1.37), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.005) +
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + # southern low=brown; EM=purple; northern=turquoise
+        labs(y="Relative Lung Mass (% body mass)", # Hella confusing formatting for x and y axis labels 
+             x="Population") +
+        ggtitle("B") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+      #  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # Keep if you want labels angled; else don't keep
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=10), axis.title=element_text(size=12))
+)
+ggsave(box.lung2, filename="BoxPlot_RelLung_AML-AMH-HAR_2023_11-16.pdf", height=7, width=9, units="in")
+
+
+# Relative flight muscle mass
+(box.relflight2 <- ggplot(subset(morphosub, population %in% c("AML", "AMH", "HAR")), aes(x=population, y=rel.flight.muscle.mass)) +
+       # facet_wrap(~sex, nrow=2) + 
+        geom_quasirandom(aes(color=population)) + 
+        scale_color_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + 
+        geom_boxplot(aes(fill = factor(population)), outlier.size=0.8, alpha=0.7) +
+        scale_x_discrete(labels = c("Southern\n(low)","Southern\n(high)","Northern")) + 
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        # geom_signif(comparisons = list(c("AML", "HAR"), # List pairwise comparisons in the order you want sig to appear
+        #                             c("AMH", "HAR"),
+        #                              c("AML", "AMH")),
+        #             y_position=c(3, 2.5, 4), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+        #             map_signif_level=TRUE, tip_length=0.005) +
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + # southern low=brown; EM=purple; northern=turquoise
+        labs(y="Relative Flight Muscle Mass (% body mass)", # Hella confusing formatting for x and y axis labels 
+             x="Population") +
+        ggtitle("B") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+      #  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # Keep if you want labels angled; else don't keep
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=10), axis.title=element_text(size=12))
+)
+ggsave(box.relflight2, filename="BoxPlot_RelFlightMuscle_AML-AMH-HAR_2023_11-16.pdf", height=7, width=9, units="in")
+
+# knit fig together 
+BoxPlots_InternalAnatomy_AML_AMH_HAR_3panel <- (box.heart2 + box.lung2 + box.relflight2 + plot_layout(guides = "collect"))
+print(BoxPlots_InternalAnatomy_AML_AMH_HAR_3panel)
+ggsave(BoxPlots_InternalAnatomy_AML_AMH_HAR_3panel, filename = "MorphoBoxPlots_SuppFig_3panel_InternalAnatomy_AML-AMH-HAR_2023_11-16.pdf", bg="transparent", height=5, width=11, units="in")
+
+# For Figure S10
+BoxPlots_HeartAndMuscle_AML_AMH_HAR_2panel <- (box.heart2 + box.relflight2 + plot_layout(guides = "collect"))
+print(BoxPlots_HeartAndMuscle_AML_AMH_HAR_2panel)
+ggsave(BoxPlots_HeartAndMuscle_AML_AMH_HAR_2panel, filename = "MorphoBoxPlots_SuppFig_2panel_HeartAndMuscleAnatomy_AML-AMH-HAR_2023_11-16.pdf", bg="transparent", height=5, width=11, units="in")
+
+
+### RUN QUICK STATS TO GET P-VALUES FOR LUNG DIFFERENCES 
+
+# Run ANOVA
+aov.lung <- aov(rel.lung ~ population, data=morphosub); summary(aov.lung)
+Anova(aov.lung, type=3)
+round(AIC(aov.lung), 3) 
+lm_diag_plots(aov.lung)
+
+# Test ANOVA assumptions (for both, <0.05 = violates assumptions; >0.05 "not sig" = normal/does not violate assumptions)
+# Formal test for normality w/ Anderson-Darling test
+ad.test(aov.lung$residuals) # normal 
+# Formal test for equal variances w/ Levene's test (normality not assumed)
+leveneTest(rel.lung ~ population, data=morphosub) # Variances not equal 
+
+# Because variances aren't equal we violate ANOVA assumptions and thus need to use Kruskal-Wallis.
+kw.lung <- kruskal.test(rel.lung ~ population, data=morphosub); kw.lung
+#Kruskal-Wallis chi-squared = 12.817, df = 2, p-value = 0.001647
+# There are significant differences in lung size among populations
+
+# Conduct Dunn's Test of multiple comparisons (basically nonparametric equivalent of lsmeans/Tukey's post-hoc)
+# Performs Dunn's (1964) test of multiple comparisons following a significant Kruskal-Wallis test, 
+# possibly with a correction to control the experimentwise error rate.
+library(FSA)
+dunnTest(rel.lung ~ population, data=morphosub, kw=TRUE)
+#   Comparison          Z      P.unadj       P.adj
+# 1  AMH - AML  1.7663839 0.0773314582 0.154662916
+# 2  AMH - HAR -0.2939389 0.7688046090 0.768804609
+# 3  AML - HAR -3.5590316 0.0003722248 0.001116674
+
+# Quickly subset and get means
+morpho.aml <- morphosub[which(morphosub$population =="AML"),] # 86 obs
+morpho.amh <- morphosub[which(morphosub$population =="AMH"),] # 23 obs
+morpho.har <- morphosub[which(morphosub$population =="HAR"),] # 162 obs
+
+# Get mean relative lung sizes of each group
+aml.mean.rellung <- mean(morpho.aml$rel.lung, na.rm=TRUE); aml.mean.rellung # AML mean rel lung = 0.7093002% body mass
+amh.mean.rellung <- mean(morpho.amh$rel.lung, na.rm=TRUE); amh.mean.rellung # AMH mean rel lung = 0.8659852% body mass
+har.mean.rellung <- mean(morpho.har$rel.lung, na.rm=TRUE); har.mean.rellung # HAR mean rel lung = 0.8932982% body mass
+
+#relative lung = (raw lung mass/body mass)*100 = units are "% body mass"
+
+# Difference between AML and HAR relative lung mass: 
+diff.har.aml.lung <- har.mean.rellung-aml.mean.rellung; round(diff.har.aml.lung,3) # 0.184
+
+# HAR have significantly greater relative lung masses than AML (p = 0.001)
+# HAR relative lung masses are, on average, 0.18% body mass greater than AML (note that this number isn't that impressive)
+
+# What is the percent difference in relative lung size between AML and HAR? 
+# Formula is: ((number1 - number2)/((number1 + number2)/2))*100
+# Percent difference
+lung.percent.diff <- ((har.mean.rellung - aml.mean.rellung)/((har.mean.rellung + aml.mean.rellung)/2))*100; round(lung.percent.diff,1) 
+# The mean relative lung mass of HAR is 23% larger than the mean relative lung mass of AML. 
+
+# Percent difference - AML (SOUTHERN AT LOW ELEV) VS AMH (SOUTHERN AT HIGH ELEV)
+lung.percent.diff.AMLvsAMH <- ((amh.mean.rellung - aml.mean.rellung)/((amh.mean.rellung + aml.mean.rellung)/2))*100; round(lung.percent.diff.AMLvsAMH,1) 
+# The mean relative lung mass of AMH is 19.9% = ~20% larger than the mean relative lung mass of AML. 
+
+
+### NOW GET SAMPLE SIZES FOR LUNG COMPARISONS 
+morpho.aml.lung <- morpho.aml[-which(is.na(morpho.aml$rel.lung)),] # 17 obs
+morpho.amh.lung <- morpho.amh[-which(is.na(morpho.amh$rel.lung)),] # 5 obs
+morpho.har.lung <- morpho.har[-which(is.na(morpho.har$rel.lung)),] # 38 obs
+
+
+
+##### Now run stats to get heart and flight muscle (lack of) differences
+
+# Run ANOVA
+aov.heart <- aov(rel.heart ~ population, data=morphosub); summary(aov.heart)
+Anova(aov.heart, type=3)
+round(AIC(aov.heart), 3) 
+lm_diag_plots(aov.heart)
+
+# Test ANOVA assumptions (for both, <0.05 = violates assumptions; >0.05 "not sig" = normal/does not violate assumptions)
+# Formal test for normality w/ Anderson-Darling test
+ad.test(aov.heart$residuals) # not normal 
+# Formal test for equal variances w/ Levene's test (normality not assumed)
+leveneTest(rel.heart ~ population, data=morphosub) # Variances equal 
+
+# Because variances aren't equal we violate ANOVA assumptions and thus need to use Kruskal-Wallis.
+kw.heart <- kruskal.test(rel.heart ~ population, data=morphosub); kw.heart
+# Kruskal-Wallis chi-squared = 1.3813, df = 2, p-value = 0.5013
+# There are NO significant differences in heart size among populations
+
+# Conduct Dunn's Test of multiple comparisons (basically nonparametric equivalent of lsmeans/Tukey's post-hoc)
+# Performs Dunn's (1964) test of multiple comparisons following a significant Kruskal-Wallis test, 
+# possibly with a correction to control the experimentwise error rate.
+library(FSA)
+dunnTest(rel.heart ~ population, data=morphosub, kw=TRUE)
+#   Comparison          Z   P.unadj     P.adj
+# 1  AMH - AML -1.1748764 0.2400442 0.7201325
+# 2  AMH - HAR -0.8085303 0.4187854 0.8375707
+# 3  AML - HAR  0.6635580 0.5069732 0.5069732
+
+
+# Run ANOVA
+aov.muscle <- aov(rel.flight.muscle.mass ~ population, data=morphosub); summary(aov.muscle)
+Anova(aov.muscle, type=3)
+round(AIC(aov.muscle), 3) 
+lm_diag_plots(aov.muscle)
+
+# Test ANOVA assumptions (for both, <0.05 = violates assumptions; >0.05 "not sig" = normal/does not violate assumptions)
+# Formal test for normality w/ Anderson-Darling test
+ad.test(aov.muscle$residuals) # not normal 
+# Formal test for equal variances w/ Levene's test (normality not assumed)
+leveneTest(rel.flight.muscle.mass ~ population, data=morphosub) # Variances equal 
+
+# Because variances aren't equal we violate ANOVA assumptions and thus need to use Kruskal-Wallis.
+kw.muscle <- kruskal.test(rel.flight.muscle.mass ~ population, data=morphosub); kw.muscle
+# Kruskal-Wallis chi-squared = 0.65503, df = 2, p-value = 0.7207
+# There are NO significant differences in muscle size among populations
+
+# Conduct Dunn's Test of multiple comparisons (basically nonparametric equivalent of lsmeans/Tukey's post-hoc)
+# Performs Dunn's (1964) test of multiple comparisons following a significant Kruskal-Wallis test, 
+# possibly with a correction to control the experimentwise error rate.
+library(FSA)
+dunnTest(rel.flight.muscle.mass ~ population, data=morphosub, kw=TRUE)
+#  Comparison          Z   P.unadj     P.adj
+# 1  AMH - AML -0.3324079 0.7395813 0.7395813
+# 2  AMH - HAR -0.7570069 0.4490457 1.0000000
+# 3  AML - HAR -0.4393185 0.6604308 1.0000000
+```
+
+
+
+# BOXPLOT FIG OF LUNG DIFFERENCES, PANEL B IN FIGURE 4
+```{r}
+# Re-level factors so that AML comes before AMH: 
+morphosub$population <- factor(morphosub$population, levels = c("AML", "AMH", "HAR")) 
+levels(morphosub$population)
+
+(box.lung2 <- ggplot(subset(morphosub, population %in% c("AML", "AMH", "HAR")), aes(x=population, y=rel.lung)) +
+       # facet_wrap(~sex, nrow=2) + 
+        geom_quasirandom(aes(color=population)) + 
+        scale_color_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + 
+        geom_boxplot(aes(fill = factor(population)), outlier.size=0.8, alpha=0.7) +
+        scale_x_discrete(labels = c("Southern\n(low)","Southern\n(high)","Northern")) + 
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("AML", "HAR")), # List pairwise comparisons in the order you want sig to appear
+                              #       c("AMH", "HAR"),
+                              #        c("AML", "AMH")),
+                    y_position=c(1.45), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.02) +
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        coord_cartesian(ylim = c(0.5, 1.5)) + # Necessary to keep ggsignif askterisks in plot boundaries; get this range w/in data range
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + # southern low=brown; EM=purple; northern=turquoise
+        labs(y="Relative Lung Mass (% body mass)", # Hella confusing formatting for x and y axis labels 
+             x="Population") +
+        ggtitle("C") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+      #  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # Keep if you want labels angled; else don't keep
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=10), axis.title=element_text(size=12))
+)
+ggsave(box.lung2, filename="BoxPlot_RelLung_AML-AMH-HAR_2023_11-16.pdf", height=3.5, width=3.5, units="in")
+# This size is perfect to drop into Illustrator figure
+```
+
+
+
+# Plot boxplots to assess differences between SEXES
+12-panel box plot supplemental fig comparing morphological characteristics between sexes 
+Since Northern and Southern are putatively different species, we need to take a look at them separately 
+Note 3/7/23: I moved mass into main panel fig and made this into a 10-panel supp fig without mass
+```{r}
+
+# Northern vs Southern mass diffs are not included because those ended up main figs (above)
+
+### -----
+
+# Box plot of bill, northern
+(box.bill.sex.n <- ggplot(subset(morphon, sex %in% c("female", "male")), aes(x=sex, y=bill)) +
+        #facet_wrap(~analysis.lineage, nrow=2) + 
+        geom_quasirandom(aes(color=sex)) + 
+        scale_color_manual(values = c("#F21414", "#D2A6F7")) + 
+        geom_boxplot(aes(fill = factor(sex)), outlier.size=0.8, alpha=0.7) +
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        # geom_signif(comparisons = list(c("female", "male")), 
+        #             map_signif_level=TRUE, tip_length=0) + # Note sig diffs    
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#F21414", "#D2A6F7")) + # pink males, red females
+        labs(y="Bill (mm)", # Hella confusing formatting for x and y axis labels 
+             x="") +
+        ggtitle("A") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+       # theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=8), axis.title=element_text(size=12))
+)
+ggsave(box.bill.sex.n, filename="BoxPlot_Morpho_SexN_vs_Bill_2023-10-17.pdf", height=7, width=9, units="in")
+
+
+# Box plot of bill, northern
+(box.bill.sex.s <- ggplot(subset(morphos, sex %in% c("female", "male")), aes(x=sex, y=bill)) +
+       # facet_wrap(~analysis.lineage, nrow=2) + 
+        geom_quasirandom(aes(color=sex)) + 
+        scale_color_manual(values = c("#F21414", "#D2A6F7")) + 
+        geom_boxplot(aes(fill = factor(sex)), outlier.size=0.8, alpha=0.7) +
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        # geom_signif(comparisons = list(c("female", "male")), 
+        #             map_signif_level=TRUE, tip_length=0) + # Note sig diffs    
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#F21414", "#D2A6F7")) + # pink males, red females
+        labs(y="", # Hella confusing formatting for x and y axis labels 
+             x="") +
+        ggtitle("B") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+       # theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=8), axis.title=element_text(size=12))
+)
+ggsave(box.bill.sex.s, filename="BoxPlot_Morpho_SexS_vs_Bill_2023-10-17.pdf", height=7, width=9, units="in")
+
+
+### ----
+
+
+# Box plot of wing, northern
+(box.wing.sex.n <- ggplot(subset(morphon, sex %in% c("female", "male")), aes(x=sex, y=wing)) +
+        #facet_wrap(~analysis.lineage, nrow=2) + 
+        geom_quasirandom(aes(color=sex)) + 
+        scale_color_manual(values = c("#F21414", "#D2A6F7")) + 
+        geom_boxplot(aes(fill = factor(sex)), outlier.size=0.8, alpha=0.7) +
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("female", "male")), # List pairwise comparisons in the order you want sig to appear
+                    y_position=c(143), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.005) +   
+       # stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#F21414", "#D2A6F7")) + # pink males, red females
+        labs(y="Wing Chord (mm)", # Hella confusing formatting for x and y axis labels 
+             x="") +
+        ggtitle("C") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+        #theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=8), axis.title=element_text(size=12))
+)
+ggsave(box.wing.sex.n, filename="BoxPlot_Morpho_SexN_vs_Wing_2023-10-17.pdf", height=7, width=9, units="in")
+ 
+
+# Box plot of wing, southern
+(box.wing.sex.s <- ggplot(subset(morphos, sex %in% c("female", "male")), aes(x=sex, y=wing)) +
+        #facet_wrap(~analysis.lineage, nrow=2) + 
+        geom_quasirandom(aes(color=sex)) + 
+        scale_color_manual(values = c("#F21414", "#D2A6F7")) + 
+        geom_boxplot(aes(fill = factor(sex)), outlier.size=0.8, alpha=0.7) +
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("female", "male")), # List pairwise comparisons in the order you want sig to appear
+                    y_position=c(141), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.005) +   
+       # stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#F21414", "#D2A6F7")) + # pink males, red females
+        labs(y="", # Hella confusing formatting for x and y axis labels 
+             x="") +
+        ggtitle("D") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+        #theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=8), axis.title=element_text(size=12))
+)
+ggsave(box.wing.sex.s, filename="BoxPlot_Morpho_SexS_vs_Wing_2023-10-17.pdf", height=7, width=9, units="in")
+ 
+
+
+### -----
+
+
+# Box plot of tail, northern
+(box.tail.sex.n <- ggplot(subset(morphon, sex %in% c("female", "male")), aes(x=sex, y=tail)) +
+        #facet_wrap(~analysis.lineage, nrow=2) + 
+        geom_quasirandom(aes(color=sex)) + 
+        scale_color_manual(values = c("#F21414", "#D2A6F7")) + 
+        geom_boxplot(aes(fill = factor(sex)), outlier.size=0.8, alpha=0.7) +
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("female", "male")), # List pairwise comparisons in the order you want sig to appear
+                    y_position=c(92), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.005) +  
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#F21414", "#D2A6F7")) + # pink males, red females
+        labs(y="Tail (mm)", # Hella confusing formatting for x and y axis labels 
+             x="") +
+        ggtitle("E") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+        #theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=8), axis.title=element_text(size=12))
+)
+ggsave(box.tail.sex.n, filename="BoxPlot_Morpho_SexN_vs_Tail_2023-10-17.pdf", height=7, width=9, units="in")
+
+
+# Box plot of tail, southern
+(box.tail.sex.s <- ggplot(subset(morphos, sex %in% c("female", "male")), aes(x=sex, y=tail)) +
+        #facet_wrap(~analysis.lineage, nrow=2) + 
+        geom_quasirandom(aes(color=sex)) + 
+        scale_color_manual(values = c("#F21414", "#D2A6F7")) + 
+        geom_boxplot(aes(fill = factor(sex)), outlier.size=0.8, alpha=0.7) +
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("female", "male")), # List pairwise comparisons in the order you want sig to appear
+                    y_position=c(88), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.005) +
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#F21414", "#D2A6F7")) + # pink males, red females
+        labs(y="", # Hella confusing formatting for x and y axis labels 
+             x="") +
+        ggtitle("F") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+        #theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=8), axis.title=element_text(size=12))
+)
+ggsave(box.tail.sex.s, filename="BoxPlot_Morpho_SexS_vs_Tail_2023-10-17.pdf", height=7, width=9, units="in")
+
+
+### ----
+ 
+# Box plot of tarsus, northern 
+(box.tarsus.sex.n <- ggplot(subset(morphon, sex %in% c("female", "male")), aes(x=sex, y=tarsus)) +
+        #facet_wrap(~analysis.lineage, nrow=2) + 
+        geom_quasirandom(aes(color=sex)) + 
+        scale_color_manual(values = c("#F21414", "#D2A6F7")) + 
+        geom_boxplot(aes(fill = factor(sex)), outlier.size=0.8, alpha=0.7) +
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("female", "male")), # List pairwise comparisons in the order you want sig to appear
+                    y_position=c(13.2), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.005) +
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#F21414", "#D2A6F7")) + # pink males, red females
+        labs(y="Tarsus (mm)", # Hella confusing formatting for x and y axis labels 
+             x="Northern") +
+        ggtitle("G") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+        #theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=8), axis.title=element_text(size=12))
+)
+ggsave(box.tarsus.sex.n, filename="BoxPlot_Morpho_SexN_vs_Tarsus_2023-10-17.pdf", height=7, width=9, units="in")
+
+
+# Box plot of tarsus, southern 
+(box.tarsus.sex.s <- ggplot(subset(morphos, sex %in% c("female", "male")), aes(x=sex, y=tarsus)) +
+        #facet_wrap(~analysis.lineage, nrow=2) + 
+        geom_quasirandom(aes(color=sex)) + 
+        scale_color_manual(values = c("#F21414", "#D2A6F7")) + 
+        geom_boxplot(aes(fill = factor(sex)), outlier.size=0.8, alpha=0.7) +
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        # geom_signif(comparisons = list(c("female", "male")), # List pairwise comparisons in the order you want sig to appear
+        #             y_position=c(12), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+        #             map_signif_level=TRUE, tip_length=0.005) +  
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#F21414", "#D2A6F7")) + # pink males, red females
+        labs(y="", # Hella confusing formatting for x and y axis labels 
+             x="Southern") +
+        ggtitle("H") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+        #theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=8), axis.title=element_text(size=12))
+)
+ggsave(box.tarsus.sex.s, filename="BoxPlot_Morpho_SexS_vs_Tarsus_2023-10-17.pdf", height=7, width=9, units="in")
+
+# COMBINE ALL PLOTS TO MAKE 6-PANEL FIGURE: 
+# Current version in supplement (no mass because this made it into the main figure)
+library(patchwork)
+MorphoBoxPlots_10panel_BySex <- (
+                    (box.bill.sex.n + box.bill.sex.s) / 
+                   # (box.skull.sex.n + box.skull.sex.s) / 
+                    (box.wing.sex.n + box.wing.sex.s) /
+                    (box.tail.sex.n + box.tail.sex.s) /
+                    (box.tarsus.sex.n + box.tarsus.sex.s)
+                    )
+print(MorphoBoxPlots_10panel_BySex)
+ggsave(MorphoBoxPlots_10panel_BySex, filename = "MorphoBoxPlots_10panel_BySex_2023-10-17.pdf", bg="transparent", height=20, width=8, units="in")
+```
+
+
+
+
+## STATS 
+
+# MORPHO analysis BETWEEN SEXES: 
+```{R}
+# Drop birds of unknown sex
+morphon.nounk <- morphon[-which(morphon$sex =="unknown"),] # Drop unknown sexes; 141 obs
+morphos.nounk <- morphos[-which(morphos$sex =="unknown"),] # Drop unknown sexes (a lot bc most birds aren't dissected); 84 obs
+
+##### -----
+
+# Mass Northern
+# Test for normality with Shapiro-Wilk test
+# Note: I much prefer to evaluate normality w/ histograms and qqplots
+with(morphon.nounk, shapiro.test(mass[sex == "male"])) # W = 0.86501, p-value = 0.0006176
+with(morphon.nounk, shapiro.test(mass[sex == "female"])) # W = 0.96874, p-value = 0.2261
+# Result: p-value >0.05 = data not sig different from normal distribution; p < 0.05 = data violate normality
+
+# Test for equal variances: 
+var.mass.northern <- var.test(mass ~ sex, data=morphon.nounk); var.mass.northern
+# F = 0.2558, num df = 47, denom df = 33, p-value = 2.18e-05
+# Result: p-value >0.05 = data have equal variances; p < 0.05 = data violate equal variances assumption
+
+# Run t-test to get means: 
+# t.mass.northern <- t.test(mass ~ sex, data=morphon.nounk,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     var.equal=FALSE, # verified w/ F-test above
+#                     conf.level=0.95)
+# t.mass.northern
+
+# sample estimates:
+# mean in group female   mean in group male 
+#             20.55562             23.10118 
+
+# On average, male northerns are 2.55 g heavier than female Northerns. 
+
+# Run Wilxocon rank sum (aka Mann Whitney test):
+w.mass.northern <- wilcox.test(mass ~ sex, data=morphon.nounk,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    conf.int=TRUE,
+                    conf.level=0.95)
+w.mass.northern
+# W = 200.5, p-value = 7.033e-09
+               
+# Masses of male Northerns are significantly greater than masses of female Northerns (p < 0.0001; Wilcoxon rank sum test).
+
+
+# Mass Southern
+# Test for normality with Shapiro-Wilk test
+# Note: I much prefer to evaluate normality w/ histograms and qqplots
+with(morphos.nounk, shapiro.test(mass[sex == "male"])) # W = 0.92292, p-value = 0.2746
+with(morphos.nounk, shapiro.test(mass[sex == "female"])) # W = 0.94308, p-value = 0.1744
+# Result: p-value >0.05 = data not sig different from normal distribution; p < 0.05 = data violate normality
+
+# Test for equal variances: 
+var.mass.southern <- var.test(mass ~ sex, data=morphos.nounk); var.mass.southern
+# F = 1.3908, num df = 24, denom df = 12, p-value = 0.561
+# Result: p-value >0.05 = data have equal variances; p < 0.05 = data violate equal variances assumption
+
+# Run t-test: 
+t.mass.southern <- t.test(mass ~ sex, data=morphos.nounk,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    var.equal=FALSE, # verified w/ F-test above
+                    conf.level=0.95)
+t.mass.southern
+# t = -5.3761, df = 28.246, p-value = 9.665e-06
+# On average, male Southerns are 3.5 grams heavier than female Southerns
+
+# sample estimates:
+# mean in group female   mean in group male 
+#               19.538               22.975  
+               
+# Masses of male southerns are significantly greater than masses of female southerns (p < 0.0001; t-test).
+
+
+## -----
+
+# bill Northern
+# Test for normality with Shapiro-Wilk test
+# Note: I much prefer to evaluate normality w/ histograms and qqplots
+with(morphon.nounk, shapiro.test(bill[sex == "male"])) # W = 0.97261, p-value = 0.2126
+with(morphon.nounk, shapiro.test(bill[sex == "female"])) # W = 0.97744, p-value = 0.2628
+# Result: p-value >0.05 = data not sig different from normal distribution; p < 0.05 = data violate normality
+
+# Test for equal variances: 
+var.bill.northern <- var.test(bill ~ sex, data=morphon.nounk); var.bill.northern
+# F = 1.1582, num df = 66, denom df = 57, p-value = 0.5724
+# Result: p-value >0.05 = data have equal variances; p < 0.05 = data violate equal variances assumption
+
+# Run t-test: 
+t.bill.northern <- t.test(bill ~ sex, data=morphon.nounk,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    var.equal=FALSE, # verified w/ F-test above
+                    conf.level=0.95)
+t.bill.northern
+# t = 0.24201, df = 122.36, p-value = 0.8092
+
+# Run Wilxocon rank sum (aka Mann Whitney test):
+# w.bill.northern <- wilcox.test(bill ~ sex, data=morphon.nounk,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     conf.int=TRUE,
+#                     conf.level=0.95)
+# w.bill.northern
+# W = 222, p-value = 3.978e-10
+
+# sample estimates:
+# mean in group female   mean in group male 
+#             38.60507             38.52828 
+               
+# There is no difference in bill length between northern males and northern females (p = 0.8092; t-test).
+
+
+# bill Southern
+# Test for normality with Shapiro-Wilk test
+with(morphos.nounk, shapiro.test(bill[sex == "male"])) # W = 0.88059, p-value = 0.004946
+with(morphos.nounk, shapiro.test(bill[sex == "female"])) # W = 0.98058, p-value = 0.7246
+# Result: p-value >0.05 = data not sig different from normal distribution; p < 0.05 = data violate normality
+
+# Test for equal variances: 
+var.bill.southern <- var.test(bill ~ sex, data=morphos.nounk); var.bill.southern
+# F = 1.617, num df = 36, denom df = 26, p-value = 0.205
+# Result: p-value >0.05 = data have equal variances; p < 0.05 = data violate equal variances assumption
+
+# Run t-test:
+# t.bill.southern <- t.test(bill ~ sex, data=morphos.nounk,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     var.equal=FALSE, # verified w/ F-test above
+#                     conf.level=0.95)
+# t.bill.southern
+
+
+# Run Wilxocon rank sum (aka Mann Whitney test):
+w.bill.southern <- wilcox.test(bill ~ sex, data=morphos.nounk,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    conf.int=TRUE,
+                    conf.level=0.95)
+w.bill.southern
+# W = 601, p-value = 0.3345
+
+# sample estimates:
+# mean in group female   mean in group male 
+#             36.24233             35.73667 
+#                
+# There is no significant difference in bill length between southern males and southern females (p = 0.3345; t-test).
+
+
+## -----
+
+## Note: I went back through these stats on 3/13/23 but didn't update skull bc it's not in the paper
+
+# skull Northern
+# Test for normality with Shapiro-Wilk test
+# Note: I much prefer to evaluate normality w/ histograms and qqplots
+with(morphon.nounk, shapiro.test(skull[sex == "male"])) # W = 0.96563, p-value = 0.6357
+with(morphon.nounk, shapiro.test(skull[sex == "female"])) # W = 0.95291, p-value = 0.3359
+# Result: p-value >0.05 = data not sig different from normal distribution; p < 0.05 = data violate normality
+
+# Test for equal variances: 
+var.skull.northern <- var.test(skull ~ sex, data=morphon.nounk); var.skull.northern
+# F = 1.015, num df = 33, denom df = 29, p-value = 0.9735
+# Result: p-value >0.05 = data have equal variances; p < 0.05 = data violate equal variances assumption
+
+# Run t-test: 
+t.skull.northern <- t.test(skull ~ sex, data=morphon.nounk,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    var.equal=FALSE, # verified w/ F-test above
+                    conf.level=0.95)
+t.skull.northern
+# t = 0.46275, df = 41.991, p-value = 0.6459
+
+# Run Wilxocon rank sum (aka Mann Whitney test):
+# w.skull.northern <- wilcox.test(skull ~ sex, data=morphon.nounk,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     conf.int=TRUE,
+#                     conf.level=0.95)
+# w.skull.northern
+
+# 
+# sample estimates:
+# mean in group female   mean in group male 
+#             65.02174             64.82571 
+               
+# There is no significant difference in skull length between northern males and northern females (p = 0.6459 ; t-test).
+
+
+# skull Southern
+# Test for normality with Shapiro-Wilk test
+with(morphos.nounk, shapiro.test(skull[sex == "male"])) # W = 0.90701, p-value = 0.2247
+with(morphos.nounk, shapiro.test(skull[sex == "female"])) # W = 0.86808, p-value = 0.02048
+# Result: p-value >0.05 = data not sig different from normal distribution; p < 0.05 = data violate normality
+
+# Test for equal variances: 
+var.skull.southern <- var.test(skull ~ sex, data=morphos.nounk); var.skull.southern
+# F = 1.8424, num df = 16, denom df = 10, p-value = 0.3291
+# Result: p-value >0.05 = data have equal variances; p < 0.05 = data violate equal variances assumption
+
+# Run t-test: 
+# t.skull.southern <- t.test(skull ~ sex, data=morphos.nounk,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     var.equal=FALSE, # verified w/ F-test above
+#                     conf.level=0.95)
+# t.skull.southern
+
+
+# Run Wilxocon rank sum (aka Mann Whitney test):
+w.skull.southern <- wilcox.test(skull ~ sex, data=morphos.nounk,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    conf.int=TRUE,
+                    conf.level=0.95)
+w.skull.southern
+# W = 88, p-value = 0.8172
+
+# sample estimates:
+# mean in group female   mean in group male 
+#             60.43294             60.34273   
+#                
+# There is no difference in bill length between southern males and southern females (p = 0.8172; Wilcoxon rank sum test).
+
+
+## -----
+
+# wing Northern
+# Test for normality with Shapiro-Wilk test
+# Note: I much prefer to evaluate normality w/ histograms and qqplots
+with(morphon.nounk, shapiro.test(wing[sex == "male"])) # W = 0.91323, p-value = 0.000522
+with(morphon.nounk, shapiro.test(wing[sex == "female"])) # W = 0.97664, p-value = 0.2304
+# Result: p-value >0.05 = data not sig different from normal distribution; p < 0.05 = data violate normality
+
+# Test for equal variances: 
+var.wing.northern <- var.test(wing ~ sex, data=morphon.nounk); var.wing.northern
+# F = 0.8776, num df = 67, denom df = 57, p-value = 0.6046
+# Result: p-value >0.05 = data have equal variances; p < 0.05 = data violate equal variances assumption
+
+# Run t-test: 
+# t.wing.northern <- t.test(wing ~ sex, data=morphon.nounk,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     var.equal=FALSE, # verified w/ F-test above
+#                     conf.level=0.95)
+# t.wing.northern
+
+# Run Wilxocon rank sum (aka Mann Whitney test):
+w.wing.northern <- wilcox.test(wing ~ sex, data=morphon.nounk,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    conf.int=TRUE,
+                    conf.level=0.95)
+w.wing.northern
+# W = 976.5, p-value = 1.072e-06
+
+# sample estimates:
+# mean in group female   mean in group male 
+#             125.6324             131.1379 
+               
+# Male northerns have significantly longer wings than female northerns (p < 0.0001; Wilcoxon rank sum test).
+# Male Northern wings are, on average, 5.5 mm longer than female Northern wings
+
+
+# wing Southern
+# Test for normality with Shapiro-Wilk test
+with(morphos.nounk, shapiro.test(wing[sex == "male"])) # W = 0.9868, p-value = 0.974
+with(morphos.nounk, shapiro.test(wing[sex == "female"])) # W = 0.92415, p-value = 0.01043
+# Result: p-value >0.05 = data not sig different from normal distribution; p < 0.05 = data violate normality
+
+# Test for equal variances: 
+var.wing.southern <- var.test(wing ~ sex, data=morphos.nounk); var.wing.southern
+# F = 1.3368, num df = 37, denom df = 26, p-value = 0.4434
+# Result: p-value >0.05 = data have equal variances; p < 0.05 = data violate equal variances assumption
+
+# Run t-test: 
+# t.wing.southern <- t.test(wing ~ sex, data=morphos.nounk,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     var.equal=FALSE, # verified w/ F-test above
+#                     conf.level=0.95)
+# t.wing.southern
+
+# Run Wilxocon rank sum (aka Mann Whitney test):
+w.wing.southern <- wilcox.test(wing ~ sex, data=morphos.nounk,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    conf.int=TRUE,
+                    conf.level=0.95)
+w.wing.southern
+# W = 334.5, p-value = 0.008702
+
+# sample estimates:
+# mean in group female   mean in group male 
+#             122.0750             126.1786
+#                
+# Southern Males have significantly longer wings than southern females (p = 0.008; Wilcoxon signed-rank test).
+# Southern males have wings that are 4.4 mm longer, on average, than southern female wings
+
+
+## -----
+
+# tail Northern
+# Test for normality with Shapiro-Wilk test
+# Note: I much prefer to evaluate normality w/ histograms and qqplots
+with(morphon.nounk, shapiro.test(tail[sex == "male"])) # W = 0.98066, p-value = 0.4804
+with(morphon.nounk, shapiro.test(tail[sex == "female"])) # W = 0.98039, p-value = 0.3604
+# Result: p-value >0.05 = data not sig different from normal distribution; p < 0.05 = data violate normality
+
+# Test for equal variances: 
+var.tail.northern <- var.test(tail ~ sex, data=morphon.nounk); var.tail.northern
+# F = 1.0198, num df = 67, denom df = 57, p-value = 0.9443
+# Result: p-value >0.05 = data have equal variances; p < 0.05 = data violate equal variances assumption
+
+# Run t-test: 
+t.tail.northern <- t.test(tail ~ sex, data=morphon.nounk,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    var.equal=FALSE, # verified w/ F-test above
+                    conf.level=0.95)
+t.tail.northern
+# t = -2.0956, df = 121.24, p-value = 0.0382
+
+# Run Wilxocon rank sum (aka Mann Whitney test):
+# w.tail.northern <- wilcox.test(tail ~ sex, data=morphon.nounk,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     conf.int=TRUE,
+#                     conf.level=0.95)
+# w.tail.northern
+# W = 981.5, p-value = 4.571e-07
+# 
+# sample estimates:
+# mean in group female   mean in group male 
+#             79.53676             81.08621 
+               
+# Male northerns have significantly longer tails than female northerns (p = 0.04; t-test).
+# Tails of male Northerns are, on average, 1.55 mm longer than tails of female Northerns
+
+
+# tail Southern
+# Test for normality with Shapiro-Wilk test
+with(morphos.nounk, shapiro.test(tail[sex == "male"])) # W = 0.95594, p-value = 0.2975
+with(morphos.nounk, shapiro.test(tail[sex == "female"])) # W = 0.93065, p-value = 0.01691
+# Result: p-value >0.05 = data not sig different from normal distribution; p < 0.05 = data violate normality
+
+# Test for equal variances: 
+var.tail.southern <- var.test(tail ~ sex, data=morphos.nounk); var.tail.southern
+# F = 0.76113, num df = 39, denom df = 26, p-value = 0.4318
+# Result: p-value >0.05 = data have equal variances; p < 0.05 = data violate equal variances assumption
+
+# Run t-test: 
+# t.tail.southern <- t.test(tail ~ sex, data=morphos.nounk,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     var.equal=FALSE, # verified w/ F-test above
+#                     conf.level=0.95)
+# t.tail.southern
+
+# Run Wilxocon rank sum (aka Mann Whitney test):
+w.tail.southern <- wilcox.test(tail ~ sex, data=morphos.nounk,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    conf.int=TRUE,
+                    conf.level=0.95)
+w.tail.southern
+# W = 353.5, p-value = 0.01709
+
+# sample estimates:
+# mean in group female   mean in group male 
+#             78.55000             80.74074  
+#                
+# Southern Males have significantly longer tails than southern females (p = 0.017; Wilcoxon rank sum test).
+# Tails of male Southerns are, on average, 2.19 mm longer than tails of female Southerns
+
+
+
+## -----
+
+# tarsus Northern
+# Test for normality with Shapiro-Wilk test
+# Note: I much prefer to evaluate normality w/ histograms and qqplots
+with(morphon.nounk, shapiro.test(tarsus[sex == "male"])) # W = 0.9161, p-value = 0.0066
+with(morphon.nounk, shapiro.test(tarsus[sex == "female"])) # W = 0.94315, p-value = 0.02149
+# Result: p-value >0.05 = data not sig different from normal distribution; p < 0.05 = data violate normality
+
+# Test for equal variances: 
+var.tarsus.northern <- var.test(tarsus ~ sex, data=morphon.nounk); var.tarsus.northern
+# F = 1.052, num df = 47, denom df = 38, p-value = 0.879
+# Result: p-value >0.05 = data have equal variances; p < 0.05 = data violate equal variances assumption
+
+# Run t-test: 
+# t.tarsus.northern <- t.test(tarsus ~ sex, data=morphon.nounk,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     var.equal=FALSE, # verified w/ F-test above
+#                     conf.level=0.95)
+# t.tarsus.northern
+
+# Run Wilxocon rank sum (aka Mann Whitney test):
+w.tarsus.northern <- wilcox.test(tarsus ~ sex, data=morphon.nounk,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    conf.int=TRUE,
+                    conf.level=0.95)
+w.tarsus.northern
+# W = 697, p-value = 0.04178
+
+# sample estimates:
+# mean in group female   mean in group male 
+#             9.958333            10.195128
+               
+# Male northerns have significantly longer tarsi than female northerns (p = 0.04; Wilcoxon rank sum test).
+# Male Northerns have tarsi that are, on average, 0.24 mm longer than female Northerns
+
+
+# tarsus Southern
+# Test for normality with Shapiro-Wilk test
+with(morphos.nounk, shapiro.test(tarsus[sex == "male"])) # W = 0.9321, p-value = 0.2932
+with(morphos.nounk, shapiro.test(tarsus[sex == "female"])) # W = 0.97872, p-value = 0.8456
+# Result: p-value >0.05 = data not sig different from normal distribution; p < 0.05 = data violate normality
+
+# Test for equal variances: 
+var.tarsus.southern <- var.test(tarsus ~ sex, data=morphos.nounk); var.tarsus.southern
+# F = 0.74352, num df = 25, denom df = 14, p-value = 0.5017
+# Result: p-value >0.05 = data have equal variances; p < 0.05 = data violate equal variances assumption
+
+# Run t-test: 
+t.tarsus.southern <- t.test(tarsus ~ sex, data=morphos.nounk,
+                    paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+                    var.equal=FALSE, # verified w/ F-test above
+                    conf.level=0.95)
+t.tarsus.southern
+# t = 0.90491, df = 25.916, p-value = 0.3738
+
+# Run Wilxocon rank sum (aka Mann Whitney test):
+# w.tarsus.southern <- wilcox.test(tarsus ~ sex, data=morphos.nounk,
+#                     paired=FALSE, # specifies dependence between two groups (i.e. measurements of initial and final)
+#                     conf.int=TRUE,
+#                     conf.level=0.95)
+# w.tarsus.southern
+
+# sample estimates:
+# mean in group female   mean in group male 
+#            10.157692             9.925333 
+#                
+# Southern Males and females do not differ signifiantly in their tarsus length (p = 0.37; t-test).
+# Southern females had tarsi 0.24 mm longer than Southern males
+```
+
+
+
+----
+
+
+# PCA of morphological variables by northern and southern
+
+# Make data frames
+```{r}
+# just males and just females
+females <- morphosub[which(morphosub$sex =="female"),] # 126 records 
+males <- morphosub[which(morphosub$sex =="male"),] # 99 records
+```
+
+MALES
+```{R}
+# Note that you need to rename dataframes with each step (i.e. subsetting, removing NAs, log-transforming)
+# If you don't, you'll write over data frames accidentally and end up with tmp errors "replacement has x rows, data has y"
+
+# Subset by just variables you'll need for PCA
+males.subset <- males[ , c("rowID", "identifier", "museum", "country", "elev.final", "month", "year", "analysis.lineage", "sex", "age", "bill", "wing", "tail")]
+# Note that I'm excluding mass bc box plots showed no mass diffrence between north and south (and missing a lot of data)
+# Exlcuding bill plus head because a bit repetitive with bill 
+# Exluding tarsus because missing a lot of data and box plots showed no difference
+
+# Drop NAs so you can run PCA (Can't have missing data)
+males.subset.nona <- na.omit(males.subset) # Now 86 observations
+
+# Log transform to standardize PCA inputs (can't use standardize function, for some reason)
+males.subset.nona.log <- log(males.subset.nona[, c("bill", "wing", "tail")])
+
+# Make vectors to plot ellipses with ggbiplot
+m.lineage <- males.subset.nona[, "analysis.lineage"]
+m.lineage <- factor(m.lineage, levels = c("northern", "southern")) # relevel factor order, which got mixed (hybrid in there)
+#sex <- males.subset.nona[, "sex"]
+    # Can't relevel to exclude unknown sexes because you didn't subset to exclude unknowns (since this is northern vs southern)
+
+# RUN PCA 
+males.pca <- prcomp(males.subset.nona.log, center=TRUE, scale.=TRUE) 
+print(males.pca) # get loadings; also achieved w/ pg.pca$rotation
+
+# describes importance of components
+summary(males.pca) # Look at cumulative proportion; first 2 PCs explain 81.22% of variance; first three explain 100%
+
+# visualize how much variance is explained by top PCs
+screeplot(males.pca)
+plot(males.pca, type = "l")
+biplot(males.pca)
+autoplot(males.pca)
+
+# predict new PC values with new observed data
+# predict(pg.pca, newdata=tail(pg.varlist, 2))
+```
+
+
+**Interpretation of Morpho PCA by Northern vs. Southern**
+- The first 2 principal components explain 
+```{r}
+# Variation explained by first 2 principal components = 81.87%
+round((sum(summary(males.pca)$sdev[1:2]^2)/sum(summary(males.pca)$sdev^2)), 4)*100
+
+# Importance of PCs
+summary(males.pca)
+
+# loadings
+print(males.pca) 
+```
+
+
+
+# Plot PCA
+```{r}
+library(ggbiplot)
+# Northern: #00C5CD
+# Southern: #8B795E
+
+## MAKE SURE LEGEND READS THAT COLORS CORRESPOND TO LINEAGE CORRECTLY! Originally this wasn't the case (even though levels were right)
+## and it took me staring at this forever to figure out why.
+
+# Morphological PCA with bill, wing chord, tail - Colored by Lineage
+(pcplot.males <- ggbiplot::ggbiplot(males.pca, obs.scale = 1, var.scale = 1, groups=m.lineage, ellipse = TRUE, circle = FALSE, 
+                        var.axes = FALSE, varname.size=3) + # varaxes = PC arrows; varnam.size = adjusts size of var names
+        scale_color_manual(name="Lineage", values=c("#00C5CD", "#8B795E")) + # southern=brown, northern=turquoise
+        #scale_shape_manual(name="Sex", values=c(17, 19, 21)) + # Values specify shapes 
+        geom_point(aes(colour=m.lineage), size=2) +
+        # PC1 arrows and labels 
+        geom_segment(aes(x=2.5, y=-2.5, xend=3.5, yend=-2.5), arrow = arrow(length = unit(0.2, "cm"), type="closed")) + 
+        annotate(geom="text", x=2.8, y=-2.3, label="larger birds", size=2.5) + # bottom label, right
+        geom_segment(aes(x=-2.5, y=-2.5, xend=-3.5, yend=-2.5), arrow = arrow(length = unit(0.2, "cm"), type="closed")) + 
+        annotate(geom="text", x=-2.8, y=-2.3, label="smaller birds", size=2.5) + # bottom label, left
+        # PC2 arrows and labels 
+        geom_segment(aes(x=-3.5, y=-1, xend=-3.5, yend=-2.0), arrow = arrow(length = unit(0.2, "cm"), type="closed")) + 
+        annotate(geom="text", x=-2.65, y=-1.7, label="smaller bill & wings,\nlarger tail", size=2.5) + # left label bottom
+        geom_segment(aes(x=-3.5, y=1, xend=-3.5, yend=1.9), arrow = arrow(length = unit(0.2, "cm"), type="closed")) + 
+        annotate(geom="text", x=-2.65, y=1.9, label="larger bill & wings,\nsmaller tail", size=2.5) + # left label top
+        annotate(geom="text", x=3.2, y=2.2, label="Males", size=4) + # MALE LABEL, TOP RIGHT
+        # g <- g + scale_color_discrete(name = '')
+        theme(legend.direction = 'vertical', legend.position = 'right') + 
+        theme(panel.grid.major = element_blank(),
+             panel.grid.minor = element_blank(),
+             panel.border = element_rect(colour = "black", fill=NA, size=0.5),
+             panel.background = element_blank()) + 
+        theme(axis.text=element_text(size=11, face="bold")))
+#ggtitle("PCA w/ Morphological Measurements (bill, wing chord, tail)")) 
+print(pcplot.males)
+ggsave(pcplot.males, filename="MorphoPCA_Males_BillWingTail_ColorBylineage_2023-10-17.pdf", height=7, width=9, units="in")
+
+# Need to figure out how to make points alpha=0.75
+```
+
+
+FEMALES
+```{R}
+# Note that you need to rename dataframes with each step (i.e. subsetting, removing NAs, log-transforming)
+# If you don't, you'll write over data frames accidentally and end up with tmp errors "replacement has x rows, data has y"
+
+# Subset by just variables you'll need for PCA
+females.subset <- females[ , c("rowID", "identifier", "museum", "country", "elev.final", "month", "year", "analysis.lineage", "sex", "age", "bill", "wing", "tail")]
+# Note that I'm excluding mass bc box plots showed no mass diffrence between north and south (and missing a lot of data)
+# Exlcuding bill plus head because a bit repetitive with bill 
+# Exluding tarsus because missing a lot of data and box plots showed no difference
+
+# Drop NAs so you can run PCA (Can't have missing data)
+females.subset.nona <- na.omit(females.subset) # Now 106 observations
+
+# Log transform to standardize PCA inputs (can't use standardize function, for some reason)
+females.subset.nona.log <- log(females.subset.nona[, c("bill", "wing", "tail")])
+
+# Make vectors to plot ellipses with ggbiplot
+f.lineage <- females.subset.nona[, "analysis.lineage"]
+f.lineage <- factor(f.lineage, levels = c("northern", "southern")) # relevel factor order, which got mixed (hybrid in there)
+#sex <- females.subset.nona[, "sex"]
+    # Can't relevel to exclude unknown sexes because you didn't subset to exclude unknowns (since this is northern vs southern)
+
+# RUN PCA 
+females.pca <- prcomp(females.subset.nona.log, center=TRUE, scale.=TRUE) 
+print(females.pca) # get loadings; also achieved w/ pg.pca$rotation
+
+# describes importance of components
+summary(females.pca) # Look at cumulative proportion; first 2 PCs explain 82% of variance; first three explain 79%
+
+# visualize how much variance is explained by top PCs
+screeplot(females.pca)
+plot(females.pca, type = "l")
+biplot(females.pca)
+autoplot(females.pca)
+
+# predict new PC values with new observed data
+# predict(pg.pca, newdata=tail(pg.varlist, 2))
+```
+
+
+**Interpretation of Morpho PCA by Northern vs. Southern**
+- The first 2 principal components explain 
+```{r}
+# Variation explained by first 2 principal components = 80.84%
+round((sum(summary(females.pca)$sdev[1:2]^2)/sum(summary(females.pca)$sdev^2)), 4)*100
+
+# Importance of PCs
+summary(females.pca)
+
+# loadings
+print(females.pca) 
+```
+
+
+# Plot female PCA
+```{r}
+
+## Turn on legend.position=right to double check that northern and southern are colored correctly!
+
+# Morphological PCA with bill, wing chord, tail - Colored by Haplo
+(pcplot.females <- ggbiplot::ggbiplot(females.pca, obs.scale = 1, var.scale = 1, groups=f.lineage, ellipse = TRUE, circle = FALSE, 
+                        var.axes = FALSE, varname.size=3) + # varaxes = PC arrows; varnam.size = adjusts size of var names
+        scale_color_manual(name="Lineage\nAssignment", values=c("#00C5CD", "#8B795E")) + # southern=brown, northern=turquoise
+        #scale_shape_manual(name="Sex", values=c(17, 19, 21)) + # Values specify shapes 
+        geom_point(aes(colour=f.lineage), size=2, alpha=0.75) +
+        # PC1 arrows and labels 
+        geom_segment(aes(x=2.5, y=-2.5, xend=3.5, yend=-2.5), arrow = arrow(length = unit(0.2, "cm"), type="closed")) + 
+        annotate(geom="text", x=2.8, y=-2.3, label="smaller birds", size=2.6) + # bottom label, right
+        geom_segment(aes(x=-2.5, y=-2.5, xend=-3.5, yend=-2.5), arrow = arrow(length = unit(0.2, "cm"), type="closed")) + 
+        annotate(geom="text", x=-2.8, y=-2.3, label="larger birds", size=2.6) + # bottom label, left
+        # PC2 arrows and labels 
+        geom_segment(aes(x=-3.5, y=-1, xend=-3.5, yend=-2.0), arrow = arrow(length = unit(0.2, "cm"), type="closed")) + 
+        annotate(geom="text", x=-2.75, y=-1.5, label="smaller bill &\nwings, \nlarger tail", size=2.6) + # left label bottom
+        geom_segment(aes(x=-3.5, y=1, xend=-3.5, yend=1.9), arrow = arrow(length = unit(0.2, "cm"), type="closed")) + 
+        annotate(geom="text", x=-2.75, y=1.7, label="larger bill &\nwings, \nsmaller tail", size=2.6) + # left label top
+        annotate(geom="text", x=3.2, y=2.2, label="Females", size=4) + # FEMALE LABEL, TOP RIGHT
+        # g <- g + scale_color_discrete(name = '')
+        theme(legend.direction = 'vertical', legend.position = "none") + 
+        theme(panel.grid.major = element_blank(),
+             panel.grid.minor = element_blank(),
+             panel.border = element_rect(colour = "black", fill=NA, size=0.5),
+             panel.background = element_blank()) + 
+        theme(axis.text=element_text(size=11, face="bold")))
+#ggtitle("PCA w/ Morphological Measurements (bill, wing chord, tail)")) 
+print(pcplot.females)
+#ggsave(pcplot.females, filename="MorphoPCA_Females_BillWingTail_ColorBylineage_2023-10-17.pdf", height=7, width=9, units="in")
+
+# Need to figure out how to make points alpha=0.75
+```
+
+
+# Make morpho PCA 2-panel fig
+```{r}
+
+# COMBINE ALL PLOTS TO MAKE 6-PANEL FIGURE: 
+#library(patchwork)
+MorphoPCA_2panel_PlotBySex_ColorByLineage <- (pcplot.females / pcplot.males + plot_layout(guides = "collect"))
+print(MorphoPCA_2panel_PlotBySex_ColorByLineage)
+
+#ggsave(MorphoPCA_2panel_PlotBySex_ColorByLineage, filename = "MorphoPCA_2panel_PlotBySex_ColorByLineage_2023-10-17.pdf", bg="transparent", height=8, width=6, units="in")
+
+# It's not possible to distinguish large Southerns from average Northerns, but the average Southern is much smaller than N. 
+# Males and females are distuinguishable by morphology, but there's a great deal of overlap. 
+
+# Open this file in Illustrator to insert little male and female signs on plots
+```
+
+
+
+
+## LINEAR DISCRIMINANT ANALYSIS
+
+Analyze data for males and females separately due to differences between sexes. 
+# FEMALES
+```{r}
+# Let's use our .nona data from PCA above to make things simple; make a copy so we don't mess up PCA data frame above 
+fem.dat.lda <- females.subset.nona
+scatterplotMatrix(fem.dat.lda[11:13])
+
+# Check structure
+str(fem.dat.lda)
+fem.dat.lda$wing <- as.numeric(fem.dat.lda$wing) # make wing numeric
+
+# Scale morpho predictors
+fem.dat.lda[, c("bill", "wing", "tail")] <- scale(fem.dat.lda[, c("bill", "wing", "tail")])
+#fem.dat.lda[14:16] <- scale(fem.dat.lda[14:16]) # Scale by  calling by column number, which is dangerous
+
+# identify variables that can help separate out species 
+library(psych)
+pairs.panels(fem.dat.lda[11:13],
+             method="pearson", # Pearson correlation coefficient
+             hist.col = "olivedrab3", # color histogram
+             density=TRUE, # show density plots
+             gap = 0,
+             ellipses=TRUE,
+            # ci=TRUE, # Adds 95% confidence intervals
+          #   lm=TRUE,
+             bg = c("#8B795E", "#00C5CD")[fem.dat.lda$analysis.lineage],
+             pch = 21)
+# Top right-hand corner gives us correlation coefficients
+# Bottom left scatter plots show separation of the data with different combinations of variables 
+# This confirms what we know: there is a lot of overlap and it can be super hard to separate the two species. 
+
+
+## CREATE TRAINING AND TEST DATASETS
+set.seed(32567) # set seed 
+
+#Use 80% of dataset as training set and remaining 20% as testing set
+sample.fem <- sample(
+                    c(TRUE, FALSE), 
+                    nrow(fem.dat.lda), 
+                    replace=TRUE, 
+                    prob=c(0.5,0.5)
+                    )
+
+train.fem <- fem.dat.lda[sample.fem, ]
+test.fem <- fem.dat.lda[!sample.fem, ]
+
+
+## FIT LDA MODEL
+model.fem <- lda(analysis.lineage ~ bill + wing + tail, data=train.fem); model.fem #, CV=TRUE)
+## Interpret model output
+
+## USE THE MODEL TO MAKE PREDICTIONS
+preds.fem <- predict(model.fem, test.fem)
+# You could theoretically predict single or multiple values by manually putting those into their own data frame and specifying as the test 
+# data frame here instead of "test.fem"
+
+# Get accuracy of the model
+mean(preds.fem$class==test.fem$analysis.lineage)
+
+## MERGE PREDICTIONS WITH DATA
+probs.fem <- preds.fem$posterior; probs.fem # Pull all posterior probabilities 
+model.class.fem <- preds.fem$class # Pull classes
+test.probs.fem <- cbind(test.fem, probs.fem, model.class.fem) # Merge posteriors and model-determined class w/ our test.fem test data 
+levels(test.probs.fem$analysis.lineage) # check to make sure that Southern is still leveled before Northern
+
+# Scatterplot: Probability of southern classification against probability of northern classification colored by analysis.lineage
+(ProbClassificationLDA_plot <- ggplot(subset(test.probs.fem), aes(x=southern, y=northern, colour=analysis.lineage)) + # Add shape=Clade here to get shapes to work properly
+  geom_point(size=4, alpha=0.8) +
+   scale_color_manual(values = c("#8B795E", "#00C5CD")) + 
+ # geom_smooth(method = "lm", formula = y ~ x, colour="black", size=1.0) + # line used to be dark turquoise
+  theme_classic() + 
+  labs(x="Southern (posterior probability)", # Removed "Elevation (m)" because we don't want Panel A to have label
+       y="Northern (posterior probability)") +
+  theme(legend.position = "none") +
+    geom_abline(intercept=0.0, slope=1, linetype=3) +
+    annotate(geom="text", x=0.55, y=0.90, label="50% training, 50% test\nModel accuracy = 65.4%", size=6.5) + # bottom label, right
+ # annotate("text", x=4200, y=145, size=3.5, label = "italic(R) ^ 2==0.05", parse = TRUE) + # R^2 from full model
+  #ggtitle("C") + # Assign panel number/header; this will be (a) because first in series of 3
+  theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+         plot.title = element_text(face="bold")) + # This makes panel header bold 
+       # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+  theme(plot.margin = unit(c(0.0,right=0.2,0.0,0.2), "cm")) +  # top, right, bottom, left
+  theme(axis.text.y=element_text(size=16), axis.text.x=element_text(size=16), axis.title=element_text(size=16))
+ )
+ggsave(ProbClassificationLDA_plot, filename="Scatterplot_ProbabilityOfCorrectClassification_50Training50Test_Females_2023-05-22.pdf", height=5, width=6, units="in")
+```
+
+
+Now let's do males. 
+# MALES
+```{r}
+# Let's use our .nona data from PCA above to make things simple; make a copy so we don't mess up PCA data frame above 
+male.dat.lda <- males.subset.nona
+scatterplotMatrix(male.dat.lda[11:13])
+
+# Check structure
+str(male.dat.lda)
+male.dat.lda$wing <- as.numeric(male.dat.lda$wing) # make wing numeric
+
+# Scale morpho predictors
+male.dat.lda[, c("bill", "wing", "tail")] <- scale(male.dat.lda[, c("bill", "wing", "tail")])
+#male.dat.lda[14:16] <- scale(male.dat.lda[14:16]) # Scale by  calling by column number, which is dangerous
+
+library(psych)
+pairs.panels(male.dat.lda[14:16],
+             method="pearson", # Pearson correlation coefficient
+             hist.col = "olivedrab3", # color histogram
+             density=TRUE, # show density plots
+             gap = 0,
+             ellipses=TRUE,
+          #   lm=TRUE,
+             bg = c("#8B795E", "#00C5CD")[male.dat.lda$analysis.lineage],
+             pch = 21)
+
+## CREATE TRAINING AND TEST DATASETS
+set.seed(32567) # set seed 
+
+#Use 80% of dataset as training set and remaining 20% as testing set
+sample.male <- sample(
+                    c(TRUE, FALSE), 
+                    nrow(male.dat.lda), 
+                    replace=TRUE, 
+                    prob=c(0.5,0.5)
+                    )
+
+train.male <- male.dat.lda[sample.male, ]
+test.male <- male.dat.lda[!sample.male, ]
+
+
+## FIT LDA MODEL
+model.male <- lda(analysis.lineage ~ bill + wing + tail, data=train.male); model.male #, CV=TRUE)
+
+## USE THE MODEL TO MAKE PREDICTIONS
+preds.male <- predict(model.male, test.male)
+
+# Get accuracy of the model
+mean(preds.male$class==test.male$analysis.lineage)
+
+## MERGE PREDICTIONS WITH DATA
+probs.male <- preds.male$posterior; probs.male # Pull all posterior probabilities 
+model.class.male <- preds.male$class # Pull classes
+test.probs.male <- cbind(test.male, probs.male, model.class.male) # Merge posteriors and model-determined class w/ our test.male test data 
+levels(test.probs.male$analysis.lineage) # check to make sure that Southern is still leveled before Northern
+
+# Scatterplot: Probability of southern classification against probability of northern classification colored by analysis.lineage
+(ProbClassificationLDA_plot_male <- ggplot(subset(test.probs.male), aes(x=southern, y=northern, colour=analysis.lineage)) + # Add shape=Clade here to get shapes to work properly
+  geom_point(size=4, alpha=0.8) +
+   scale_color_manual(values = c("#8B795E", "#00C5CD")) + 
+ # geom_smooth(method = "lm", formula = y ~ x, colour="black", size=1.0) + # line used to be dark turquoise
+  theme_classic() + 
+  labs(x="Southern (posterior probability)", # Removed "Elevation (m)" because we don't want Panel A to have label
+       y="Northern (posterior probability)") +
+  theme(legend.position = "none") +
+    geom_abline(intercept=0.0, slope=1, linetype=3) +
+    annotate(geom="text", x=0.55, y=0.90, label="50% training, 50% test\nModel accuracy = 79.5%", size=6.5) + # bottom label, right
+ # annotate("text", x=4200, y=145, size=3.5, label = "italic(R) ^ 2==0.05", parse = TRUE) + # R^2 from full model
+  #ggtitle("C") + # Assign panel number/header; this will be (a) because first in series of 3
+  theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+         plot.title = element_text(face="bold")) + # This makes panel header bold 
+       # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+  theme(plot.margin = unit(c(0.0,right=0.2,0.0,0.2), "cm")) +  # top, right, bottom, left
+  theme(axis.text.y=element_text(size=16), axis.text.x=element_text(size=16), axis.title=element_text(size=16))
+ )
+ggsave(ProbClassificationLDA_plot_male, filename="Scatterplot_ProbabilityOfCorrectClassification_50Training50Test_Males_2023-05-22.pdf", height=5, width=6, units="in")
+```
+
+
+---
+
+
+# Print environment for reproducibility
+```{r}
+sessionInfo() # List of packages and versions in use 
+```
+
+###########
+
+## END 
