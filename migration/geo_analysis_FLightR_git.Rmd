@@ -1,0 +1,1384 @@
+---
+title: "Geolocator Analysis - FLightR"
+author: "Jessie Williamson"
+date: "Last revised 2024-04-10"
+output: html_document
+---
+
+Combined Giant Hummingbird geolocator analysis script with all 7 geolocators. 
+
+Geolocator numbers: BJ085, BJ090, BJ091, BJ104, BJ105, BJ112, BC377
+
+Many notes from: 
+FLightR analysis example of Black tailed godwit geolocator
+_this vignette is supplementary material to_
+**Rakhimberdiev E., Saveliev A., Piersma, T., Karagicheva J. 2017 FLightR: An R package for reconstructing animal paths from solar geolocation loggers. Methods in Ecology and Evolution. [DOI](www.dx.doi.org/10.1111/2041-210X.12765)**
+
+## Install packages
+Many geolocator analysis packages aren't on CRAN; if anything breaks, may need to uncomment these and install from GitHub. 
+```{r, eval = F}
+# To run version 0.4.5 which we use in this example try
+# install_github('eldarrak/FLightR@0.4.5')
+
+# The latest version is available here: 
+# install_github('eldarrak/FLightR')
+
+# Get the latest version of SGAT from Git:
+# install.packages("remotes")
+# remotes::install_github("SWotherspoon/SGAT")
+
+# devtools::install_github("SLisovski/TwGeos", force=TRUE)
+```
+
+
+# setwd()
+```{R}
+rm(list=ls(all=TRUE)) # clear workspace 
+setwd("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis")
+```
+
+---
+
+# Load packages
+```{r}
+# Geolocator analysis and general packages
+library(devtools) # load devtools
+library(SGAT)
+# library(BAStag) # not available for this version of R
+library(FLightR) # Version 0.5.1
+library(TwGeos)
+library(ggplot2)
+library(job)
+
+# Mapping packages
+library(maptools)
+library(mapdata)
+library(maps)
+library(grid)
+library(raster)
+library(viridis)
+library(RColorBrewer)
+library(rgdal)
+
+# Need to install ggmap from Github because it's outdated on CRAN (hence the error message Re: v. 2.7); boot from here: 
+# if(!requireNamespace("devtools")) install.packages("devtools")
+# devtools::install_github("dkahle/ggmap", ref = "tidyup", force=TRUE) # force=TRUE forces installation
+library(ggmap)
+```
+
+# Manually load functions
+```{r}
+# Simeon Lisovski's findHEZenith(), supposedly in twGeos wasn't working, so I'm pasting his code from GitHub
+findHEZenith <- function(twl, tol = 0.08, range=c(250,400)){
+  z <- seq(89, 99, by = 0.25)
+  lats  <- apply(cbind(z), 1, function(x) thresholdPath(twl$Twilight, twl$Rise, zenith = x, tol=tol)$x[,2])
+  sds   <- apply(lats[range[1]:range[2],], 2, sd, na.rm = T)
+  colsT <- data.frame(sd = seq(min(sds)-0.1, max(sds)+0.1, length = 100), col = heat.colors(100))
+  opar <- par(mfrow = c(2,1), mar=c(4,4,1,1))
+  matplot(lats, col = as.character(colsT$col[cut(sds, breaks = colsT[,1], labels = F)]),
+          lty = 1, type = "l", xlab = "", ylab = "Latitude", las = 1, xaxt = "n")
+  lines(lats[,which.min(sds)], lwd = 3)
+  abline(v = range, lty = 2, col = "cornflowerblue")
+  axis(1, at = seq(1, nrow(twl), length = 5),
+       labels = format(as.POSIXct(seq(twl$Twilight[1], twl$Twilight[nrow(twl)], length = 5)), "%d-%b"))
+  plot(z, sds, las = 1, type = "o", pch = 16, cex = 1.3, col = as.character(colsT$col[cut(sds, breaks = colsT[,1], labels = F)]),
+       xlab = "zenith", ylab = "sd in latitude (within range)")
+  abline(v = z[which.min(sds)], lty = 3)
+  mtext(paste("zenith =", z[which.min(sds)]), 3, line = -1.5, cex = 1.1)
+  par(opar)
+  return(z[which.min(sds)])
+}
+```
+
+
+# Import data 
+Read in .lux files. Use .lux files adjusted for clock drift. Because some devices had low batteries (BJ091 and BJ112) or were dead upon recapture (BC377), these files were offloaded by Migrate Tech. 
+IMPORTANT!!! Note that all geolocator data are read in in GMT. We convert to Santiago local time (GMT -3/-4, depending on daylight savings) down below when we establish calibration periods. 
+```{r}
+BJ085 <- readMTlux("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/0_data_files/BJ085_09Dec18_212841driftadj.lux") # BJ085 <- subset(BJ085, select=c("Date", "Light")) # just to make sure we have what we need
+
+BJ090 <- readMTlux("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/0_data_files/BJ090_01Feb19_223748driftadj.lux")  
+BJ090 <- subset(BJ090, select=c("Date", "Light")) 
+
+BJ091 <- readMTlux("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/0_data_files/BJ091_28Feb19_194258fixdriftadj.lux")
+BJ091 <- subset(BJ091, select=c("Date", "Light")) 
+
+BJ104 <- readMTlux("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/0_data_files/BJ104_11Dec18_172620driftadj.lux")
+BJ104 <- subset(BJ104, select=c("Date", "Light")) 
+
+BJ105 <- readMTlux("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/0_data_files/BJ105_21Jan19_162315driftadj.lux")
+BJ105 <- subset(BJ105, select=c("Date", "Light")) 
+
+BJ112 <- readMTlux("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/0_data_files/BJ112_28Feb19_193629driftadj.lux")
+BJ112 <- subset(BJ112, select=c("Date", "Light")) 
+
+BC377 <- readMTlux("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/0_data_files/BC377_28Feb19_192826.lux")
+BC377 <- subset(BC377, select=c("Date", "Light")) 
+      # NOTE: BC377 CANNOT HAVE DRIFT CORRECTED because it was dead upon recapture; account for this downstream
+```
+
+
+# Transform .lux data
+Data from .lux files go very high, so transform them before selecting twilights.
+```{r}
+# Log-transform here but note that data will be untransformed downstream with get.tags.data()
+# Also note that FLightR untransforms automatically
+
+# If *just* log-transforming
+BJ085$Light <- log(BJ085$Light)
+BJ090$Light <- log(BJ090$Light)
+BJ091$Light <- log(BJ091$Light)
+BJ104$Light <- log(BJ104$Light)
+BJ105$Light <- log(BJ105$Light)
+BJ112$Light <- log(BJ112$Light)
+BC377$Light <- log(BC377$Light)
+
+# IF nighttime readings are smaller than zero, add a super teeny value to be able to log transform
+# My data don't have any values <1, so unnecesary for me
+# BJ085$Light  <- log(BJ085$Light+0.0001) + abs(min(log(BJ085$Light+0.0001)))
+# BJ090$Light  <- log(BJ090$Light+0.0001) + abs(min(log(BJ090$Light+0.0001)))
+# BJ091$Light  <- log(BJ091$Light+0.0001) + abs(min(log(BJ091$Light+0.0001)))
+# BJ104$Light  <- log(BJ104$Light+0.0001) + abs(min(log(BJ104$Light+0.0001)))
+# BJ105$Light  <- log(BJ105$Light+0.0001) + abs(min(log(BJ105$Light+0.0001)))
+# BJ112$Light  <- log(BJ112$Light+0.0001) + abs(min(log(BJ112$Light+0.0001)))
+# BC377$Light  <- log(BC377$Light+0.0001) + abs(min(log(BC377$Light+0.0001)))
+```
+
+
+# Plot the raw light image
+This is the raw light data from the device. Each day is represented by a thin horizontal line that plots light values as grayscale pixels (dark = low light or night and white = maximum light or day).
+```{r}
+# Select starting hour for vertical axes 
+offset <- 16
+# Change offset to 6 to make day appear in the middle
+
+# Define equinox periods for 2017 and 2018; correspond to device deployment
+eqnx.2017 <- as.POSIXct(c("2017-09-22", "2017-03-20"), tz = "GMT") # 2017
+eqnx.2018 <- as.POSIXct(c("2018-09-22", "2018-03-20"), tz = "GMT") # 2018 
+# Dates mark the START of equinox and are the same for 2017 and 2018 (note that times differ) 
+
+# PLOT RAW LIGHT IMAGES
+# dt=recording interval; zlim=light level range to plot
+# Abline adds two vertical lines at equinoxes for visualization 
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis/raw_light_image_BJ085.pdf", useDingbats=F)
+lightImage(BJ085, offset=offset, zlim=c(0, 12), dt=300, main="BJ085") #
+#abline(v=eqnx.2018, lwd=2.5, lty=3, col="purple") # equinox line 
+dev.off()
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis/raw_light_image_BJ090.pdf", useDingbats=F)
+lightImage(BJ090, offset=offset, zlim=c(0, 12), dt=300, main="BJ090") 
+#abline(v=eqnx.2018, lwd=2.5, lty=3, col="purple") # equinox line 
+dev.off()
+# Looks good with some weirdness at beginning and end 
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis/raw_light_image_BJ091.pdf", useDingbats=F)
+lightImage(BJ091, offset=offset, zlim=c(0, 12), dt=300, main="BJ091") 
+#abline(v=eqnx.2018, lwd=2.5, lty=3, col="purple") # equinox line 
+dev.off()
+# Looks good with some weirdness into January 
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis/raw_light_image_BJ104.pdf", useDingbats=F)
+lightImage(BJ104, offset=offset, zlim=c(0, 12), dt=300, main="BJ104") 
+#abline(v=eqnx.2018, lwd=2.5, lty=3, col="purple") # equinox line 
+dev.off()
+# Looks good with slight weirdness near deployment
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis/raw_light_image_BJ105.pdf", useDingbats=F)
+lightImage(BJ105, offset=offset, zlim=c(0, 12), dt=300, main="BJ105") 
+#abline(v=eqnx.2018, lwd=2.5, lty=3, col="purple") # equinox line  
+dev.off()
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis/raw_light_image_BJ112.pdf", useDingbats=F)
+lightImage(BJ112, offset=offset, zlim=c(0, 12), dt=300, main="BJ112") 
+#abline(v=eqnx.2018, lwd=2.5, lty=3, col="purple") # equinox line 
+dev.off()
+# Chop off January of recapture; bad readings
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis/raw_light_image_BC377.pdf", useDingbats=F)
+lightImage(BC377, offset=offset, zlim=c(0, 12), dt=300, main="BC377") 
+#abline(v=eqnx.2017, lwd=2.5, lty=3, col="purple")  # equinox line 
+dev.off()
+# Cut off the last few months of data; gets wonky
+
+# note that raw light images exported to pdf get a little grainy (whereas night appears sharp black in R)
+# I took each of these, imported into Illustrator, and formatted for a 7-panel figure. 
+```
+
+Yearly equinox dates/times for Santiago Chile: https://www.timehubzone.com/seasons/chile/santiago
+Note that birds are unlikely to be in Santiago in mid-March and mid-September, but plotting these lines can give us a rough idea of where equinox periods fall.
+
+
+# Set threshold 
+Choose the lowest threshold value that is consistently above the noise in the night-time light levels; note that best threshold values are tag- and species-specific (Lisovski et al. 2019). 
+Lisovski et al. 2019 uses threshold=2.5; Lisovski and Hallworth vignette uses threshold=1.0; Rhakimberdiev recommends threshold=1.5  for Intigeo tags, if no strong reason for other value. 
+**Note about my threshold**: After inspecting all of my data (which has a lot of noise near sunrise/sunset), I decided on 1.4, which falls just above a clear line of black (nighttime) points and before darkest purple (sunrise/sunset; still light) periods. This is also close to the value of 1.5 recommended for Intigeo tags. 
+```{r}
+# Set light threshold here that defines twilight, run plots below to inspect data, and then revisit this if necessary. 
+threshold <- 0.5
+```
+
+
+# Visualize light patterns/threshold
+Plot ALL data and segments of data to visualize transitions during twilight times. This can help ascertain whether the threshold is set correctly. In these plots, Lefthand lines and point correspond to sunrise; righthand lines and points correspond to sunset.
+These are the equivalent of light "sliding windows"
+```{r}
+# Can specify a random chunk of observations in the middle (as I have; [2000:5000]) OR all data
+# Note that nighttime values appear as flat-ish lines at the bottom; hover around zero
+# Looking at ALL data is a little slow but can help give perspective on what's noise vs. real measurements; I like it.
+
+# BJ085
+# all data  - helpful for visualizing massive trends
+BJ085col=colorRampPalette(c("black","purple","orange"))(50)[as.numeric(cut(BJ085[1000:110000, 2],breaks=50))]
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2) )
+with(BJ085[1000:110000,], plot(Date, Light, type="o", pch=16, col=BJ085col, cex=0.5)) 
+abline(h=threshold, col="orange", lty=2, lwd=2)
+
+# zoomed in 
+BJ085col=colorRampPalette(c("black","purple","orange"))(50)[as.numeric(cut(BJ085[2000:50000, 2],breaks=50))]
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2) )
+with(BJ085[2000:5000,], plot(Date, Light, type="o", pch=16, col=BJ085col, cex=1)) 
+abline(h=threshold, col="orange", lty=2, lwd=2)
+
+
+# BJ090 
+# all data - helpful for visualizing massive trends
+BJ090col=colorRampPalette(c("black","purple","orange"))(50)[as.numeric(cut(BJ090[1000:110000, 2],breaks=50))]
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2) )
+with(BJ090[1000:110000,], plot(Date, Light, type="o", pch=16, col=BJ090col, cex=0.5)) 
+abline(h=1.5, col="orange", lty=2, lwd=2)
+
+# zoomed in 
+BJ090col=colorRampPalette(c("black","purple","orange"))(50)[as.numeric(cut(BJ090[4000:7000, 2],breaks=50))]
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2) )
+with(BJ090[4000:7000,], plot(Date, Light, type="o", pch=16, col=BJ090col, cex=1)) 
+abline(h=1.5, col="orange", lty=2, lwd=2)
+# Manually setting threshold to 1.5, which is what it was when I edited data back in 2019
+
+# BJ091
+# all data 
+BJ091col=colorRampPalette(c("black","purple","orange"))(50)[as.numeric(cut(BJ091[1000:103000, 2],breaks=50))]
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2) )
+with(BJ091[1000:103000,], plot(Date, Light, type="o", pch=16, col=BJ091col, cex=0.5)) 
+abline(h=threshold, col="orange", lty=2, lwd=2)
+
+# zoomed in 
+BJ091col=colorRampPalette(c("black","purple","orange"))(50)[as.numeric(cut(BJ091[2000:5000, 2],breaks=50))]
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2) )
+with(BJ091[2000:5000,], plot(Date, Light, type="o", pch=16, col=BJ091col, cex=1)) 
+abline(h=threshold, col="orange", lty=2, lwd=2)
+
+
+# BJ104
+# all data 
+BJ104col=colorRampPalette(c("black","purple","orange"))(50)[as.numeric(cut(BJ104[1000:93300, 2],breaks=50))]
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2) )
+with(BJ104[1000:93300,], plot(Date, Light, type="o", pch=16, col=BJ104col, cex=0.5)) 
+abline(h=threshold, col="orange", lty=2, lwd=2)
+
+# zoomed in 
+BJ104col=colorRampPalette(c("black","purple","orange"))(50)[as.numeric(cut(BJ104[2000:5000, 2],breaks=50))]
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2) )
+with(BJ104[2000:5000,], plot(Date, Light, type="o", pch=16, col=BJ104col, cex=1)) 
+abline(h=threshold, col="orange", lty=2, lwd=2)
+
+
+# BJ105
+# all data 
+BJ105col=colorRampPalette(c("black","purple","orange"))(50)[as.numeric(cut(BJ105[1000:101000, 2],breaks=50))]
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2) )
+with(BJ105[1000:101000,], plot(Date, Light, type="o", pch=16, col=BJ105col, cex=0.5)) 
+abline(h=threshold, col="orange", lty=2, lwd=2)
+
+# zoomed in 
+BJ105col=colorRampPalette(c("black","purple","orange"))(50)[as.numeric(cut(BJ105[2000:5000, 2],breaks=50))]
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2) )
+with(BJ105[2000:5000,], plot(Date, Light, type="o", pch=16, col=BJ105col, cex=1)) 
+abline(h=threshold, col="orange", lty=2, lwd=2)
+
+
+# BJ112
+# all data 
+BJ112col=colorRampPalette(c("black","purple","orange"))(50)[as.numeric(cut(BJ112[1000:102000, 2],breaks=50))]
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2) )
+with(BJ112[1000:102000,], plot(Date, Light, type="o", pch=16, col=BJ112col, cex=0.5)) 
+abline(h=threshold, col="orange", lty=2, lwd=2)
+
+# zoomed in 
+BJ112col=colorRampPalette(c("black","purple","orange"))(50)[as.numeric(cut(BJ112[2000:5000, 2],breaks=50))]
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2) )
+with(BJ112[2000:5000,], plot(Date, Light, type="o", pch=16, col=BJ112col, cex=1)) 
+abline(h=threshold, col="orange", lty=2, lwd=2)
+
+
+# BC377
+# all data 
+BC377col=colorRampPalette(c("black","purple","orange"))(50)[as.numeric(cut(BC377[1000:119000, 2],breaks=50))]
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2) )
+with(BC377[1000:119000,], plot(Date, Light, type="o", pch=16, col=BC377col, cex=0.5)) 
+abline(h=threshold, col="orange", lty=2, lwd=2)
+
+# zoomed in 
+BC377col=colorRampPalette(c("black","purple","orange"))(50)[as.numeric(cut(BC377[2000:5000, 2],breaks=50))]
+par(mfrow=c(1, 1), mar=c(2, 2, 2, 2) )
+with(BC377[2000:5000,], plot(Date, Light, type="o", pch=16, col=BC377col, cex=1)) 
+abline(h=threshold, col="orange", lty=2, lwd=2)
+```
+
+
+----
+
+## TWILIGHT DETECTION 
+
+# Interactive twilight processing 
+This is a very involved process and many resources online have description of how this works (see links below code chunk). I've also typed my own notes about how this works. 
+
+**Essentially:** Steps 1 and 2 are fast and semi-automatic; steps 3 and 4 are most important. In step 3, you might need to add or delete sunrises/sunsets. In step 4 (most tedious), you manually inspect each day by hand to analyze light curves. You want the black, purple, and green lines to overlap as much as possible. If they don't (i.e., if black curve, which represents current day, is earlier or later than purple and green, it means the program has detected a maybe-outlier sunrise or sunset time. If this is the case, click to where black should meet purple and green, you'll notice a red dot appear, then hit 'a' to accept. The red vertical line (twilight line) will shift, and you'll notice that this corresponds to "smoothing" of the top-panel entire light curve. Ideally, sunrise and sunset times should be within 40 minutes of the previous and next day (because each day's position is bounded by what comes before and after). You want the top panel to have a nice "fuzzy caterpillar" shape with no weird jumps and dips, which would indicate errant values.
+```{r}
+ # Process light data (only needs to be done once)
+X11(display="", type = "Xlib") # Calls from XQuartz
+twl.BJ085.1020 <- preprocessLight(BJ085, threshold=threshold, offset=offset, lmax=12, gr.Device="x11") 
+# No deleted or added twilights; one or two edited; data look great
+
+X11(display="", type = "Xlib") # Calls from XQuartz
+twl.BJ090.1020.7 <- preprocessLight(BJ090, threshold=1.5, offset=offset, lmax=7, gr.Device="x11") 
+# 10/13/21 pass: conservatively didn't edit much
+
+X11(display="", type = "Xlib") # Calls from XQuartz
+twl.BJ091.1023 <- preprocessLight(BJ091, threshold=1.5, offset=offset, lmax=12, gr.Device="x11") 
+# No deleted or added twilights; a few areas around late Aug/Sept that might be contenders for weird twilight deleting
+# if I decide to take a more stringent second pass
+
+X11(display="", type = "Xlib") # Calls from XQuartz
+twl.BJ104.1018 <- preprocessLight(BJ104, threshold=threshold, offset=offset, lmax=12, gr.Device="x11") 
+
+X11(display="", type = "Xlib") # Calls from XQuartz
+twl.BJ105.1018 <- preprocessLight(BJ105, threshold=threshold, offset=offset, lmax=12, gr.Device="x11") 
+
+X11(display="", type = "Xlib") # Calls from XQuartz
+twl.BJ112.1230v2 <- preprocessLight(BJ112, threshold=threshold, offset=offset, lmax=12, gr.Device="x11") 
+
+X11(display="", type = "Xlib") # Calls from XQuartz
+twl.BC377.1018 <- preprocessLight(BC377, threshold=threshold, offset=offset, lmax=12, gr.Device="x11")
+
+# -----
+
+# Save .Rdata objects
+save(twl.BJ085.1020, file="BJ085.1020.twilights.RData")
+save(twl.BJ090.1018, file="BJ090.1018.twilights.RData")
+save(twl.BJ091.1023, file="BJ091.1023.twilights.RData")
+save(twl.BJ091.1018, file="BJ091.1018.twilights.RData")
+save(twl.BJ104.1018, file="BJ104.1018.twilights.RData")
+save(twl.BJ105.1018, file="BJ105.1018.twilights.RData")
+save(twl.BJ112.1230v2, file="BJ112.1230v2.twilights.RData") # all twilights unedited 
+save(twl.BC377.1018, file="BC377.1018.twilights.RData")
+
+# Look at the data 
+head(twl.BJ090)  
+
+# Older pre-process notes (associated with troubleshooting XQuartz); as of Oct 2021, these don't seem relevant:
+# BEFORE STARTING THE BELOW, MANUALLY OPEN XQUARTZ APP TO RUN X11
+# If XQuartz isn't physically open, nothing will run properly
+# Need to load preprocessLight() from TwGeos because BAStags doesn't allow me to specify gr.Device=x11
+# When this works properly, code will run, multiple windows will pop up that say "waiting for input"
+```
+
+
+**Interactive twilight processing has 4 stages:**
+at each stage, pressing 'a' accepts current selection and proceeds to the next stage
+'q' quits, '+'/'_' zoom in/out, 'u' = undo
+
+1) subset (mandatory): selection of a subset of data for processing (left click=start, right click=end)
+       current selection is shown as a red bar over the plot
+       to change the selection, left-click on start date, right-click on end date, and press 'a'
+       e.g. leave off period between activation and deployment on bird
+
+2) search (mandatory): semi-automated search for twilights (left click=search point, right click=prevent search)
+      # aka, determine a few transitions so the whole file is done automatically
+
+3) Insert (optional): twilights are inserted where the light record is incomplete
+
+4) Edit (optional): manually adjust twilight based on light profiles
+This step is very important because it allows you to manually edit/delete wonky twilight periods
+Use forward and backward arrow keys to manually view ALL days of the year
+The little '+' sign on the top panel tells you where you are in the light curve
+  - Black line = current twilight
+  - green line = day before
+  - purple line = next day
+
+We want black, purple, and green lines to overlap as much as possible because it means twilights align
+Red vertical lines indicate twilight events
+Ideally, you want black, green, and purple lines to fall within ~40 mins of a twilight event
+More than one line indicates high uncertainty around twilight events; delete these
+Delete twilights by using the same command as above: right click. You'll notice that deleted twilights appear as
+gray dots on the top navigation plot.
+Left click makes a red dot appear, which suggests a new position for a twilight; click 'a' to SAVE this position
+
+Notes from Rakhimberdiev on Step 4, manually edit twilights:
+The idea of the preprocessLight() function is that you go through twilights one by one and delete ones that have
+obvious non random change in the shading in +/- 24 points around twilight (2 hours for 5 minute logging interval).
+For example twilight should be deleted if in the beginning the bird was in high vegetation and after it
+immediately flew to the open space. Or other way around - there is nice pattern of rising sun and in the middle
+bird goes to high vegetation and stays there...
+
+
+**Tutorials and helpful links**
+description of Preprocesslight(): https://rdrr.io/github/slisovski/TwGeos/man/preprocessLight.html
+
+Lisovski et al. 2019 guide: https://geolocationmanual.vogelwarte.ch/twilight.html
+Hallworth SGAT tutorial (good descriptions of twilight transitions): http://scbi-migbirds.github.io/Geolocator_SGAT.html
+Rhakimberdiev tutorial: https://github.com/eldarrak/FLightR/blob/master/examples/step_by_step_examples/lux%20-%20BAStags%2%20FLightR%20workflow.Rmd
+https://github.com/eldarrak/FLightR/blob/master/examples/step_by_step_examples/lux%20-%20BAStags%20-%20FLightR%20workflow.Rmd
+https://github.com/eldarrak/FLightR/blob/master/examples/step_by_step_examples/lux%20-%20BAStags%20-%20FLightR%20workflow.Rmd
+
+----
+
+# START HERE IF PRE-PROCESSING IS FINISHED AND YOU WANT TO LOAD IN DATA FOR GEO ANALYSIS
+
+# Load in data
+```{r}
+load("geolocator-analysis/BJ085.1020.twilights.RData")
+load("geolocator-analysis/BJ090.twilights.2019version.RData") # gets read in called twl
+twl.BJ090 <- twl # BJ090 gets read in as 'twl'
+  # For BJ090, use 2019 data because for whatever reason it was cleaner. Note that threshold here is 1.5.
+load("geolocator-analysis/BJ091.1018.twilights.RData")
+load("geolocator-analysis/BJ104.1018.twilights.RData")
+load("geolocator-analysis/BJ105.1018.twilights.RData")
+load("geolocator-analysis/BJ112.1230v2.twilights.RData")
+load("geolocator-analysis/BC377.1018.twilights.RData")
+```
+
+
+# Cleaning/Filtering twilight times 
+From Lisovski et al. 2019: Automated filtering of twilight times should be handled carefully. There is no perfect function that cleans your twilight file. However, twilightEdit can help to filter and remove (mark them as deleted) outliers (e.g. false twilights). The filtering and removing of twilight times is based on a set of rules:
+**1.)** if a twilight time is e.g. 45 minutes (`outlier.mins`) different to its surrounding twilight times, and these sourrounding twilight times are within a certain range of minutes (`stationary.mins`), then the twilight times will be adjusted to the median of the surrounding twilights.
+**2.)** If a twilight time is e.g. 45 minutes (`outlier.mins`) different to its surrounding twilight times, but the surrounding twilight times are more variable then you would expect them to be if they were recorded during stationary behavior, then the twilight time will be marked as deleted.
+The argument windows defines the number of twilight times surrounding the twilight in focus (e.g. same as in conventional moving window methods).
+```{R}
+# Edit twilights 
+twl.BJ085.edit <- twilightEdit(twilights = twl.BJ085.1020,
+                    offset = offset,
+                    window = 4,           # two days before and two days after
+                    outlier.mins = 45,    # difference in mins
+                    stationary.mins = 25, # are the other surrounding twilights within 25 mins of one another?
+                    plot = TRUE)
+# # No observations removed 
+# 
+twl.BJ090.edit <- twilightEdit(twilights = twl.BJ090,
+                    offset = offset,
+                    window = 4,
+                    outlier.mins = 45,
+                    stationary.mins = 25,
+                    plot = TRUE)
+# # No observations removed 
+# Single corrected point 
+ 
+twl.BJ091.edit <- twilightEdit(twilights = twl.BJ091.1018,
+                    offset = offset,
+                    window = 4,
+                    outlier.mins = 45,
+                    stationary.mins = 25,
+                    plot = TRUE)
+# No observations removed
+# 
+twl.BJ104.edit <- twilightEdit(twilights = twl.BJ104.1018,
+                    offset = offset,
+                    window = 4,
+                    outlier.mins = 45,
+                    stationary.mins = 25,
+                    plot = TRUE)
+# # No observations removed
+
+twl.BJ105.edit <- twilightEdit(twilights = twl.BJ105.1018,
+                    offset = offset,
+                    window = 4,
+                    outlier.mins = 45,
+                    stationary.mins = 25,
+                    plot = TRUE)
+# # no observations removed
+# 
+twl.BJ112.edit <- twilightEdit(twilights = twl.BJ112.1230v2,
+                    offset = offset,
+                    window = 4,
+                    outlier.mins = 45,
+                    stationary.mins = 25,
+                    plot = TRUE)
+# # No observations removed
+# 
+twl.BC377.edit <- twilightEdit(twilights = twl.BC377.1018,
+                    offset = offset,
+                    window = 4,
+                    outlier.mins = 45,
+                    stationary.mins = 25,
+                    plot = TRUE)
+# # NO observations removed
+# 
+# # Visualize sunrises, sunsets, and delted points (gray): 
+# # tsimagePoints(twl.BJ085$Twilight, offset = offset, pch = 16, cex = 1.2,
+# #               col = ifelse(twl.BJ085$Deleted, "grey20", ifelse(twl.BJ085$Rise, "firebrick", "cornflowerblue")))
+# 
+# # Save .Rdata objects (as separate files from above in case you want to go back to pre-edits)
+# save(twl.BJ085.edit, file="twl.BJ085.edit.RData")
+# save(twl.BJ090.edit, file="twl.BJ090.edit.RData")
+# save(twl.BJ091.edit, file="twl.BJ091.edit.RData")
+# save(twl.BJ104.edit, file="twl.BJ104.edit.RData")
+# save(twl.BJ105.edit, file="twl.BJ105.edit.RData")
+# save(twl.BJ112.edit, file="twl.BJ112.edit.RData")
+# save(twl.BC377.edit, file="twl.BC377.edit.RData")
+```
+
+Lisovski note: This method helps to adjust and remove twilight times that are either outliers or false twilights given a set of rules. While subjective to a certain degree as well as reproducible, the method may not be able to detect all false twilight times and may even remove correct entries during fast migration periods.
+
+---
+
+# FLightR ANALYSIS
+
+# Transfer BAStag output to TAGS format
+FLightR works with the ‘TAGS’ format, which is an agreed general annotation of twilight data by National Centre for Ecological Analysis and Synthesis working group ‘Establishing an open-source animal-tracking analysis platform for archival geolocators https://www.nceas.ucsb.edu/featured/bridge. A TAGS file is a CSV file containing the following fields: 
+
+* `datetime` – date and time in ISO 8601 format e.g. 2013-06-16T00:00:11.000Z;
+* `light` – light value measured by tag;
+* `twilight` – assigned by the software numeric indication of whether the record belongs to sunrise (1), sunset (2) or none of those (0);
+* `excluded` – indication of whether a twilight was excluded during manual inspection (logical, `TRUE | FALSE`);
+* `interp` - indication of whether the light value at twilight was interpolated (logical, `TRUE | FALSE`). 
+The fields `excluded` and `interp` may have values of `TRUE` only for `twilight > 0`. 
+The online TAGS service saves data in the TAGS format. In the R packages GeoLight and BAStag or twGeos, the annotated twilight data need to be exported to TAGS, for which the functions in the FLightR (`GeoLight2TAGS`,  `BAStag2TAGS` or `twGeos2TAGS`) can be used.
+```{r}
+# Convert to TAGS format data
+# BAStag2TAGS() is another function that essentially does the same thing
+BJ085.1020.twilights <- twGeos2TAGS(BJ085, twl.BJ085.1020, threshold=0.5, filename="geolocator-analysis/BJ085.1020.twilights.csv")  
+BJ090.2019version.twilights <- twGeos2TAGS(BJ090, twl.BJ090, threshold=1.5, filename="geolocator-analysis/BJ090.twilights.2019version.csv") # threshold 1.5 was what was used in original editing
+BJ091.1018.twilights <- twGeos2TAGS(BJ091, twl.BJ091.1018, threshold=0.5, filename="geolocator-analysis/BJ091.1018.twilights.csv")
+BJ104.1018.twilights <- twGeos2TAGS(BJ104, twl.BJ104.1018, threshold=0.5, filename="geolocator-analysis/BJ104.1018.twilights.csv")
+BJ105.1018.twilights <- twGeos2TAGS(BJ105, twl.BJ105.1018, threshold=0.5, filename="geolocator-analysis/BJ105.1018.twilights.csv")
+BJ112.twilights.1230v2 <- twGeos2TAGS(BJ112, twl.BJ112.1230v2, threshold=0.5, filename="geolocator-analysis/BJ112.1230v2.twilights.csv")
+BC377.1018.twilights <- twGeos2TAGS(BC377, twl.BC377.1018, threshold=0.5, filename="geolocator-analysis/BC377.1018.twilights.csv")
+
+# Note that ideally you would convert time zone to Santiago local at this step to write it out in local time and avoid
+# Having to change time zone before calibration period processing.
+
+# NEED to save this as .RData so you can reload it without having to redo preProcessing each time! 
+save(BJ085.1020.twilights, file="geolocator-analysis/BJ085.1020.twilights.TAGS.RData") 
+save(BJ090.2019version.twilights, file="geolocator-analysis/BJ090.twilights.2019version.TAGS.RData")
+save(BJ091.1018.twilights, file="geolocator-analysis/BJ091.1018.twilights.TAGS.RData") 
+save(BJ104.1018.twilights, file="geolocator-analysis/BJ104.1018.twilights.TAGS.RData") 
+save(BJ105.1018.twilights, file="geolocator-analysis/BJ105.1018.twilights.TAGS.RData") 
+save(BJ112.twilights.1230v2, file="geolocator-analysis/BJ112.twilights.1230v2.TAGS.RData")
+save(BC377.1018.twilights, file="geolocator-analysis/BC377.1018.twilights.TAGS.RData") 
+```
+
+See Rakhimberdiev Git Page for full twGeos2TAGS() function: https://github.com/eldarrak/FLightR/blob/master/R/Ports2TAGS.R
+
+
+# Import TAGS data 
+The function `get.tags.data` reads comma separated file in the TAGS format, detects the tag type, checks whether the light data are log-transformed, transforms them back from the log scale if needed and creates an object, containing: 
+**1.** the recorded light data; **2.** the detected twilight events; **3.** light level data at the moment of each determined sunrise and sunset and around them (24 fixes before and 24 after it events into an object of two lists; and **4.** technical parameters of the tag, added automatically, unless preset by the user.
+```{r, eval=FALSE, tidy=FALSE}
+Proc.data.BJ085.1020 <- get.tags.data("geolocator-analysis/BJ085.1020.twilights.csv")
+Proc.data.BJ090.2019version <- get.tags.data("geolocator-analysis/BJ090.twilights.2019version.csv")
+Proc.data.BJ091.1018 <- get.tags.data("geolocator-analysis/BJ091.1018.twilights.csv")
+Proc.data.BJ104.1018 <- get.tags.data("geolocator-analysis/BJ104.1018.twilights.csv")
+Proc.data.BJ105.1018 <- get.tags.data("geolocator-analysis/BJ105.1018.twilights.csv")
+Proc.data.BJ112.1230v2 <- get.tags.data("geolocator-analysis/BJ112.1230v2.twilights.csv")
+Proc.data.BC377.1018 <- get.tags.data("geolocator-analysis/BC377.1018.twilights.csv")
+
+#head(Proc.data.BJ085.1018)
+# get.tags.data should automatically un-transform log-transformed data (it's built into the function)!
+```
+ 
+
+ 
+## 2. Calibration
+
+# Calibration Periods
+Important step! Identify periods where the bird (or geolocator) were in a fixed, known location. FLightR uses a 'template fit' for calibration. For each tag it finds the linear (on a log-log scale) relationship between the light levels measured in known locations and the theoretical light levels, estimated from current sun angle in these locations with the deterministic equation developed by Ekstrom. A couple tools for identifying calibration periods: 
+
+1. **Known stationary periods** (i.e., around deployment and recapture when you know birds were breeding in Algarrobo). One or both periods can be used in calibration. 
+2.**Light curves:** Can help you ID when birds were stationary. 
+3. **FLightR `plot_slopes_by_location`:** Derive the bird's position from the data. For this, calibration slopes for the sunset and sunrise of each day of the tracking period are calculated, based on the assumption that the tag remained in the same known position all the time. Because calibration slopes reflect the adequacy of the light level measured by the device, they vary little in time and between sunsets and sunrises, as long as the tagged animal stays in the calibration location, but become apparently diverse, when it moves away from the calibration location.
+
+- Calibration is best if you use as many twilight times as possible, *but* it's important to exclude periods when you know the bird is definitely NOT at a known location, as this can screw with calibration. 
+- Calibration should ideally be at least a few weeks long (I've read this in Lisovki and Rhakimberdiev)
+- Compare light curve plots with plot_slopes_by_location plots and tweak calibration periods accordingly. 
+```{r, eval = F}
+# Set lat/lon of deployment site in Alfredo's valley
+lat.calib <- -33.348
+lon.calib <- -71.636
+
+# BJ085
+#par(mfrow=c(2,1))
+tm1.BJ085 <- c(as.POSIXct("2017-12-03"), as.POSIXct("2018-01-30")) # Settings for .1220.2 run (FINAL)
+tm2.BJ085 <- c(as.POSIXct("2018-10-01"), as.POSIXct("2018-12-08"))
+
+# Light image w/ calibration periods 
+lightImage(tagdata=BJ085, offset=16, zlim=c(0, 12)) # plot light image 
+tsimageDeploymentLines(twl.BJ085.1020$Twilight, lon.calib, lat.calib, offset=16, # Add Algarrobo sunrise/sunset curves
+                       lwd=2, col=adjustcolor("orange", alpha.f=0.8))
+abline(v=tm1.BJ085, lty=c(1,2), col="firebrick", lwd=1.5) # Add ablines for beginning and end calibration periods 
+abline(v=tm2.BJ085, lty=c(1,2), col="firebrick", lwd=1.5)
+
+# FLightR plot slopes by location w/ calibration periods  
+plot_slopes_by_location(Proc.data=Proc.data.BJ085.1020, location=c(lon.calib, lat.calib)) 
+abline(v=tm1.BJ085, lty=c(1,2), col="purple", lwd=1.5) # Add ablines for beginning and end calibration periods 
+abline(v=tm2.BJ085, lty=c(1,2), col="purple", lwd=1.5)
+
+# FlightR calibration period data frame 
+Calibration.periods.BJ085 <- data.frame(
+        calibration.start=as.POSIXct(c("2017-12-03", "2018-10-01"), tz="GMT"), # start first, start second 
+        calibration.stop=as.POSIXct(c("2018-01-30", "2018-12-08"), tz="GMT"), # end first, end second
+        lon=lon.calib, lat=lat.calib)  
+print(Calibration.periods.BJ085)
+
+## ---------
+
+# BJ090 
+tm1.BJ090 <- c(as.POSIXct("2018-02-05"), as.POSIXct("2018-02-16")) # FINAL
+tm2.BJ090 <- c(as.POSIXct("2018-11-16"), as.POSIXct("2019-01-25"))
+
+# Light image w/ calibration periods 
+lightImage(tagdata=BJ090, offset=offset, zlim=c(0, 12))
+tsimageDeploymentLines(twl.BJ090$Twilight, lon.calib, lat.calib, offset=offset, # was twl.BJ090.1020.7; 2019 VERSION READ IN
+                       lwd=2, col=adjustcolor("orange", alpha.f=0.8))
+abline(v=tm1.BJ090, lty=c(1,2), col="firebrick", lwd=1.5) # Add ablines for beginning and end calibration periods 
+abline(v=tm2.BJ090, lty=c(1,2), col="firebrick", lwd=1.5)
+
+# FLightR plot slopes by location w/ calibration periods  
+plot_slopes_by_location(Proc.data=Proc.data.BJ090.2019version, location=c(lon.calib, lat.calib)) 
+abline(v=tm1.BJ090, lty=c(1,2), col="purple", lwd=1.5) # Add ablines for beginning and end calibration periods 
+abline(v=tm2.BJ090, lty=c(1,2), col="purple", lwd=1.5)
+
+# FlightR calibration period data frame 
+Calibration.periods.BJ090 <- data.frame(
+        calibration.start=as.POSIXct(c("2018-02-05", "2018-11-16"), tz="GMT"), # start first, start second 
+        calibration.stop=as.POSIXct(c("2018-02-16", "2019-01-25"), tz="GMT"), # end first, end second
+        lon=lon.calib, lat=lat.calib)  
+print(Calibration.periods.BJ090)
+
+
+## ----------
+
+# BJ091 
+tm1.BJ091 <- c(as.POSIXct("2018-02-03"), as.POSIXct("2018-02-20")) # .1027.3 (final)
+tm2.BJ091 <- c(as.POSIXct("2018-11-15"), as.POSIXct("2019-01-06"))
+
+# Light image w/ calibration periods 
+lightImage(tagdata=BJ091, offset=offset, zlim=c(0, 12))
+tsimageDeploymentLines(twl.BJ091.1018$Twilight, lon.calib, lat.calib, offset=offset, # Add Algarrobo sunrise/sunset curves
+                       lwd=2, col=adjustcolor("orange", alpha.f=0.8))
+abline(v=tm1.BJ091, lty=c(1,2), col="firebrick", lwd=1.5) # Add ablines for beginning and end calibration periods 
+abline(v=tm2.BJ091, lty=c(1,2), col="firebrick", lwd=1.5)
+
+# FLightR plot slopes by location w/ calibration periods  
+plot_slopes_by_location(Proc.data=Proc.data.BJ091.1018, location=c(lon.calib, lat.calib)) 
+abline(v=tm1.BJ091, lty=c(1,2), col="purple", lwd=1.5) # Add ablines for beginning and end calibration periods 
+abline(v=tm2.BJ091, lty=c(1,2), col="purple", lwd=1.5)
+
+# FlightR calibration period data frame 
+Calibration.periods.BJ091 <- data.frame(
+        calibration.start=as.POSIXct(c("2018-02-03", "2018-11-15"), tz="GMT"), # start first, start second 
+        calibration.stop=as.POSIXct(c("2018-02-20", "2019-01-06"), tz="GMT"), # end first, end second
+        lon=lon.calib, lat=lat.calib)  
+print(Calibration.periods.BJ091)
+
+## ----------
+
+# BJ104 
+tm1.BJ104 <- c(as.POSIXct("2018-01-28"), as.POSIXct("2018-02-12")) # .1220.7 and .1220.8 (.8 is final)
+tm2.BJ104 <- c(as.POSIXct("2018-10-05"), as.POSIXct("2018-12-10"))
+
+# Light image w/ calibration periods
+lightImage(tagdata=BJ104, offset=offset, zlim=c(0, 12))
+tsimageDeploymentLines(twl.BJ104.1018$Twilight, lon.calib, lat.calib, offset=offset, # Add Algarrobo sunrise/sunset curves
+                       lwd=2, col=adjustcolor("orange", alpha.f=0.8))
+abline(v=tm1.BJ104, lty=c(1,2), col="firebrick", lwd=1.5) # Add ablines for beginning and end calibration periods 
+abline(v=tm2.BJ104, lty=c(1,2), col="firebrick", lwd=1.5)
+
+# FLightR plot slopes by location w/ calibration periods  
+plot_slopes_by_location(Proc.data=Proc.data.BJ104.1018, location=c(lon.calib, lat.calib)) 
+abline(v=tm1.BJ104, lty=c(1,2), col="purple", lwd=1.5) # Add ablines for beginning and end calibration periods 
+abline(v=tm2.BJ104, lty=c(1,2), col="purple", lwd=1.5) 
+
+# FlightR calibration period data frame 
+Calibration.periods.BJ104 <- data.frame(
+        calibration.start=as.POSIXct(c("2018-01-28", "2018-10-05"), tz="GMT"), # start first, start second 
+        calibration.stop=as.POSIXct(c("2018-02-12", "2018-12-10"), tz="GMT"), # end first, end second
+        lon=lon.calib, lat=lat.calib)  
+print(Calibration.periods.BJ104)
+
+## ----------
+
+# BJ105 
+tm1.BJ105 <- c(as.POSIXct("2018-02-11"), as.POSIXct("2018-02-20")) # .1222.7 (and .1223.8; and final) 
+tm2.BJ105 <- c(as.POSIXct("2018-11-01"), as.POSIXct("2019-01-16")) 
+
+# Light image w/ calibration periods
+lightImage(tagdata=BJ105, offset=offset, zlim=c(0, 12))
+tsimageDeploymentLines(twl.BJ105.1018$Twilight, lon.calib, lat.calib, offset=offset, # Add Algarrobo sunrise/sunset curves
+                       lwd=2, col=adjustcolor("orange", alpha.f=0.8))
+abline(v=tm1.BJ105, lty=c(1,2), col="firebrick", lwd=1.5) # Add ablines for beginning and end calibration periods 
+abline(v=tm2.BJ105, lty=c(1,2), col="firebrick", lwd=1.5)
+
+# FLightR plot slopes by location w/ calibration periods  
+plot_slopes_by_location(Proc.data=Proc.data.BJ105.1018, location=c(lon.calib, lat.calib)) 
+abline(v=tm1.BJ105, lty=c(1,2), col="purple", lwd=1.5) # Add ablines for beginning and end calibration periods 
+abline(v=tm2.BJ105, lty=c(1,2), col="purple", lwd=1.5)
+
+# FlightR calibration period data frame 
+Calibration.periods.BJ105 <- data.frame(
+        calibration.start=as.POSIXct(c("2018-02-11", "2018-11-01"), tz="GMT"), # start first, start second 
+        calibration.stop=as.POSIXct(c("2018-02-20", "2019-01-16"), tz="GMT"), # end first, end second
+        lon=lon.calib, lat=lat.calib) 
+print(Calibration.periods.BJ105)
+
+## ----------
+
+# BJ112 
+tm1.BJ112 <- c(as.POSIXct("2018-02-08"), as.POSIXct("2018-02-21")) # .1230.8
+tm2.BJ112 <- c(as.POSIXct("2018-11-05"), as.POSIXct("2018-12-30"))
+
+# Light image w/ calibration periods
+lightImage(tagdata=BJ112, offset=offset, zlim=c(0, 12))
+tsimageDeploymentLines(twl.BJ112.1230v2$Twilight, lon.calib, lat.calib, offset=offset, # Algarrobo sunrise/sunset curves
+                       lwd=2, col=adjustcolor("orange", alpha.f=0.8))
+abline(v=tm1.BJ112, lty=c(1,2), col="firebrick", lwd=1.5)  
+abline(v=tm2.BJ112, lty=c(1,2), col="firebrick", lwd=1.5)
+
+# FLightR plot slopes by location w/ calibration periods  
+plot_slopes_by_location(Proc.data=Proc.data.BJ112.1230v2, location=c(lon.calib, lat.calib)) 
+abline(v=tm1.BJ112, lty=c(1,2), col="purple", lwd=1.5)  
+abline(v=tm2.BJ112, lty=c(1,2), col="purple", lwd=1.5)
+
+# NOTE: battery may have been dying towards end; data wonky after 12/29/19
+
+# FlightR calibration period data frame 
+Calibration.periods.BJ112 <- data.frame(
+        calibration.start=as.POSIXct(c("2018-02-08", "2018-11-05"), tz="GMT"), # start first, start second 
+        calibration.stop=as.POSIXct(c("2018-02-21", "2018-12-30"), tz="GMT"), # end first, end second
+        lon=lon.calib, lat=lat.calib)  
+print(Calibration.periods.BJ112)
+
+## ----------
+
+# BC377 
+tm1.BC377 <- c(as.POSIXct("2017-01-17"), as.POSIXct("2017-01-30")) 
+tm2.BC377 <- c(as.POSIXct("2017-10-15"), as.POSIXct("2018-02-07")) # end date is NOT recapture; remember, 2 year bird
+
+# Light image w/ calibration periods
+lightImage(tagdata=BC377, offset=offset, zlim=c(0, 12))
+tsimageDeploymentLines(twl.BC377.1018$Twilight, lon.calib, lat.calib, offset=offset, 
+                       lwd=2, col=adjustcolor("orange", alpha.f=0.8))
+abline(v=tm1.BC377, lty=c(1,2), col="firebrick", lwd=1.5) # Add ablines for beginning and end calibration periods 
+abline(v=tm2.BC377, lty=c(1,2), col="firebrick", lwd=1.5)
+
+# FLightR plot slopes by location w/ calibration periods  
+plot_slopes_by_location(Proc.data=Proc.data.BC377.1018, location=c(lon.calib, lat.calib)) 
+abline(v=tm1.BC377, lty=c(1,2), col="purple", lwd=1.5) # Add ablines for beginning and end calibration periods 
+abline(v=tm2.BC377, lty=c(1,2), col="purple", lwd=1.5)
+
+# stop record: battery died; never stopped recording or conducted drift adjust
+
+# FlightR calibration period data frame 
+Calibration.periods.BC377 <- data.frame(
+        calibration.start=as.POSIXct(c("2017-01-17", "2017-10-15"), tz="GMT"), # start first, start second 
+        calibration.stop=as.POSIXct(c("2017-01-30", "2018-02-07"), tz="GMT"), # end first, end second
+        lon=lon.calib, lat=lat.calib) 
+print(Calibration.periods.BC377)
+```
+
+
+# Make calibration object based on specified calibration periods
+```{r, eval = F}
+# Each takes ~a few minutes to run
+calibration.BJ085 <- make.calibration(Proc.data.BJ085.1020, Calibration.periods.BJ085, model.ageing=TRUE, plot.final=TRUE)
+calibration.BJ090 <- make.calibration(Proc.data.BJ090.2019version, Calibration.periods.BJ090, model.ageing=TRUE, plot.final=TRUE)
+calibration.BJ091 <- make.calibration(Proc.data.BJ091.1018, Calibration.periods.BJ091, model.ageing=TRUE, plot.final=TRUE)
+calibration.BJ104 <- make.calibration(Proc.data.BJ104.1018, Calibration.periods.BJ104, model.ageing=TRUE, plot.final=TRUE)
+calibration.BJ105 <- make.calibration(Proc.data.BJ105.1018, Calibration.periods.BJ105, model.ageing=TRUE, plot.final=TRUE)
+calibration.BJ112 <- make.calibration(Proc.data.BJ112.1230v2, Calibration.periods.BJ112, model.ageing=TRUE, plot.final=TRUE)
+calibration.BC377 <- make.calibration(Proc.data.BC377.1018, Calibration.periods.BC377, model.ageing=TRUE, plot.final=TRUE)
+
+# plot.final=TRUE means you'll get a final observed vs. expected slope output
+# All slopes should be similar; I *think* colors correspond to months
+# set model.ageing=TRUE when there are >1 calibration periods --> assumes calibration slope changes w/ time 
+```
+
+
+# Find a calibration locations for unknown places 
+Not very helpful for my purposes. 
+It may happen that an animal was tagged in the High Arctic under polar day conditions or that it moved far away from the capture site immediately after tagging and the roof-top calibration data are not available. Even in such cases it is still possibe to obtain calibration parameters for a resident period at unknown location. If bird is assumed to be resident at some period one can try:
+```{r, eval=FALSE}
+# Location.BJ085 <- find.stationary.location(Proc.data.BJ085, '2018-07-20', '2018-08-20',
+#                                    initial.coords=c(-70, -15))
+# ~ few mins run time
+```
+The function will return geographic coordinates of the location for which the range of errors in slopes is minimal. User has to provide the initial coordinates, which should be within a few thousand kilometers from the hypothetical real location.
+
+
+## 3. Assign spatial extent
+Set up spatial grid (50 X 50 km on default) of areas where hummingbirds can realistically move. After many, many, MANY initial runs with lenient grid boundaries (i.e. -Inf, Inf from shore, etc), I got a very good sense for where our birds were moving. This is where I deviate substantially from online tutorials. The shape of the Patagona distribution (which follows the curved, non-uniform shape of the Andes) is really tricky to work with for a few reasons. A major one is that in the central Peruvian Andes there is ~220 km of suitable Patagona habitat from the shore, whereas in Bolivia there is ~600 km of suitable habitat from the shore. If I make a single  grid using make.grid(), FLightR thinks that Patagona could feasibly spend the nonbreeding season in the Peruvian Amazon, well outside its known range, which isn't biologically plausible. 
+
+In order for FLightR to analyze our movement tracks within Patagona's known range, make a more complex grid object. This could be accomplished in multiple ways: 
+1. By "knitting" several grids that account for the shape of the Andes/suitable habitat from shoreline
+2. By clipping one massive Grid to the shape (shapefile) of the Patagona distribution. Unfortunately, this option would exclude open water, and I want to allow our analysis to consider that Patagona might cross open ocean on its return migration to Chile. AND, the Patagona shapefile is pretty inaccurate (e.g. cuts off eastern edges of the Bolivian Andes), *and* excludes parts of the range we want (e.g. northern coastal Chile). If we DID want to use this option, Eldar recommends converting the shapefile to a SpatialPointsDataFrame and then cropping (see many initial attempts down this path in geo_analysis_CUT.Rmd).
+
+So, we will choose option 1, knit multiple and more complex grid shapes, revise attributes (this is CRITICAL - these are erased when we knit grids), and then overlay our grid on top of the Patagona distribution to check for accuracy/inaccuracy. 
+```{r, eval = F}
+# Read in the Patagona distribution shapefile
+pgig_shape <- readOGR(dsn = "/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/patagona-shapefile/data_0.shp", layer = "data_0")
+
+# Check extent of shapefile with quick map
+SouthAmericaMap <- map_data("world", region = c("Colombia", "Venezuela", "Guyana", "Suriname", "French Guiana", "Ecuador", "Peru", "Chile", "Bolivia", "Argentina", "Brazil", "Paraguay", "Uruguay")) # Create basemap form GGplot
+ggplot(SouthAmericaMap, aes(x = long, y = lat, group = group)) +
+geom_polygon(fill = "cornsilk4", col = "cornsilk") + # fill = country color; col = lines between countries
+#geom_polygon(data = Low48_map, fill = "cornsilk4", col = "cornsilk") +
+geom_polygon(data = pgig_shape, fill = "darkorange3", alpha = 0.8) + # fill = species polygon
+theme_void() +
+theme(panel.background = element_rect(fill = "cornsilk")) + # fill = background map color 
+coord_map(projection = "gilbert")
+
+# One hypothetical master grid, so that we can get a rough idea of visualizing extent
+Grid.test <- make.grid(left=-80, bottom=-42, right=-65, top=-4.5, 
+   distance.from.land.allowed.to.use=c(-600, Inf), # max dist from shore a Patagona can occur (-=inland, +=offshore)
+   distance.from.land.allowed.to.stay=c(-600, 0), # max dist to be stationary from land
+   plot=TRUE) # Prob of staying in area not fulfilling dist from water allowed to stay
+# This extent allows Patagona to fly AND stay 600 km from shore and fly inf over open water but stay only at the shore.
+
+####
+
+# MAKE REAL GRID 
+
+# Make multiple grids that account for different shapes and distance.from.land.allowed.to.stay:
+# Peru (skinniest part of the Andes)
+Grid1 <- make.grid(left=-80, bottom=-12.8, right=-70, top=-4.5, 
+   distance.from.land.allowed.to.use=c(-220, 150), # max dist from shore a Patagona can occur (-=inland, +=offshore)
+   distance.from.land.allowed.to.stay=c(-220, 0), # max dist to be stationary from land
+   probability.of.staying=0.0, plot=TRUE)
+# Changed bottom from 12.4 to 12.8
+
+# Southern Peruvian Andes (through Cusco area) - Cusco through Titicaca
+Grid2 <- make.grid(left=-79, bottom=-13.6, right=-68.4, top=-12.8, 
+   distance.from.land.allowed.to.use=c(-430, 150), # max dist from shore a Patagona can occur (-=inland, +=offshore)
+   distance.from.land.allowed.to.stay=c(-430, 0), # max dist to be stationary from land
+   probability.of.staying=0.0, plot=TRUE)
+# Changed from 12.4 to 12.8
+
+# Southern Peru and northern Bolivia #1 - Skinny part of southern Peru to just N of La Paz
+Grid3 <- make.grid(left=-79, bottom=-15.6, right=-67, top=-13.6, 
+   distance.from.land.allowed.to.use=c(-400, 150), # max dist from shore a Patagona can occur (-=inland, +=offshore)
+   distance.from.land.allowed.to.stay=c(-400, 0), # max dist to be stationary from land
+   probability.of.staying=0.0, plot=TRUE)
+
+# Southern Peru and northern Bolivia #2 - La Paz to Cochabamba
+Grid4 <- make.grid(left=-79, bottom=-17.3, right=-64, top=-15.6, 
+   distance.from.land.allowed.to.use=c(-460, 150), # max dist from shore a Patagona can occur (-=inland, +=offshore)
+   distance.from.land.allowed.to.stay=c(-460, 0), # max dist to be stationary from land
+   probability.of.staying=0.0, plot=TRUE)
+
+# Bolivia (widest part of the Andes) - Cochabamba through to N Argentina
+Grid5 <- make.grid(left=-79, bottom=-22, right=-64, top=-17.3, 
+   distance.from.land.allowed.to.use=c(-610, 150), # max dist from shore a Patagona can occur (-=inland, +=offshore)
+   distance.from.land.allowed.to.stay=c(-610, 0), # max dist to be stationary from land
+   probability.of.staying=0.0, plot=TRUE)
+
+# Northern Chile and Northern Argentina 1
+Grid6 <- make.grid(left=-79, bottom=-25.2, right=-64, top=-22, 
+   distance.from.land.allowed.to.use=c(-600, 150), # max dist from shore a Patagona can occur (-=inland, +=offshore)
+   distance.from.land.allowed.to.stay=c(-600, 0), # max dist to be stationary from land
+   probability.of.staying=0.0, plot=TRUE) # Prob of staying in area not fulfilling dist from water allowed to stay
+
+# Northern Chile and Northern Argentina 2
+Grid7 <- make.grid(left=-79, bottom=-27.1, right=-64.5, top=-25.2, 
+   distance.from.land.allowed.to.use=c(-580, 150), # max dist from shore a Patagona can occur (-=inland, +=offshore)
+   distance.from.land.allowed.to.stay=c(-580, 0), # max dist to be stationary from land
+   probability.of.staying=0.0, plot=TRUE) # Prob of staying in area not fulfilling dist from water allowed to stay
+
+# Central Chile and Northern Argentina 1 - - Tucuman through to Catamarca 
+Grid8 <- make.grid(left=-79, bottom=-30, right=-64.5, top=-27.1, 
+   distance.from.land.allowed.to.use=c(-560, 150), # max dist from shore a Patagona can occur (-=inland, +=offshore)
+   distance.from.land.allowed.to.stay=c(-560, 0), # max dist to be stationary from land
+   probability.of.staying=0.0, plot=TRUE) # Prob of staying in area not fulfilling dist from water allowed to stay
+
+# Central Chile and Northern Argentina 2 - - Catamarca to Mendoza
+Grid9 <- make.grid(left=-79, bottom=-34, right=-65, top=-30, 
+   distance.from.land.allowed.to.use=c(-410, 150), # max dist from shore a Patagona can occur (-=inland, +=offshore)
+   distance.from.land.allowed.to.stay=c(-410, 0), # max dist to be stationary from land
+   probability.of.staying=0.0, plot=TRUE) # Prob of staying in area not fulfilling dist from water allowed to stay
+# Consider bumping this back to 580? 
+
+# Central Chile and Central Argentina 3 (farthest south)
+Grid10 <- make.grid(left=-79, bottom=-42, right=-69, top=-34,
+   distance.from.land.allowed.to.use=c(-300, 150), # max dist from shore a Patagona can occur (-=inland, +=offshore)
+   distance.from.land.allowed.to.stay=c(-300, 0), # max dist to be stationary from land
+   probability.of.staying=0.0, plot=TRUE) # Prob of staying in area not fulfilling dist from water allowed to stay
+
+Grid <- rbind(Grid1, Grid2, Grid3, Grid4, Grid5, Grid6, Grid7, Grid8, Grid9, Grid10) # Knit final grid object
+
+# Now overlay our grid on top of the Patagona distribution to check grid extent; make modifications above as necessary
+plot(pgig_shape)
+points(Grid)
+
+# UPDATE ATTRIBUTES - IMPORTANT!!!!
+# multiple grids can be combined, but when this happen the final combined
+# matrix does not have attributes we need. Compare: 
+# attributes(Grid.test)
+# # to:
+# attributes(Grid3)
+# This is why FLightR can't run analysis on combined grid; it has no idea where in the world the grid is! 
+# This site has a super helpful description of attributes & modifying them: http://adv-r.had.co.nz/Data-structures.html
+
+# In order to make the combined matrix work, we need to add the following attributes: left and right. 
+# Note that we are not adding bottom, top, distance.from.land.allowed.to.use, or distance.from.land.allowed.to.stay
+# We incorporated this information into each of the sub-grids, so these have already been wrangled; 
+# At this point we simply need to define the extent that FLightR will use to locate the grid in the world. 
+# Use the attr() function to access and add/change individual attributes. 
+attr(Grid, "left") <- -80
+attr(Grid, "right") <- -64
+  # Note that these  dimensions encompass the full east and west extent of Patagona's range; this is intentional
+
+attributes(Grid) # check that attributes are successfully added 
+
+# Ok, looks good! Grid encompasses Patagona range *and* open water - time to run our analysis! 
+```
+The resulting `Grid` is a matrix with the columns: `lon` (longitude), `lat` (latitude) and `Stay` (probability of stay). The grid cells, which the animal presumably cannot use, are excluded from the data, while the locations at which an animal cannot be stationary are given a low probability of stay. Using masks can side track model estimation to the local minima, and we recommend to initially run model without a mask, enable them for the second run and visually compare the results, to see if the model converges to a similar track.
+
+
+# 4. Prepare the model for run
+Function `make.prerun.object` creates a complex object that will be used in the main run. It incorporates all the objects, created at earlier steps: the light data with the detected twilight events (`Proc.data`), the spatial parameters (`Grid`), geographic coordinates of the initial location, where the tracking has started (`start`), and the calibration parameters (`Calibration`).
+```{r, eval = F}
+# May take a few to 15 mins; pass to a job to free up the console
+# library(job)
+job::job({
+all.in.BJ085.0107 <- make.prerun.object(Proc.data.BJ085.1020, Grid, start=c(-71.636, -33.348),  Calibration=calibration.BJ085) 
+all.in.BJ090.0107 <- make.prerun.object(Proc.data.BJ090.2019version, Grid, start=c(-71.636, -33.348),  Calibration=calibration.BJ090)
+all.in.BJ091.0107 <- make.prerun.object(Proc.data.BJ091.1018, Grid, start=c(-71.636, -33.348),  Calibration=calibration.BJ091)
+all.in.BJ104.0107 <- make.prerun.object(Proc.data.BJ104.1018, Grid, start=c(-71.636, -33.348),  Calibration=calibration.BJ104)
+all.in.BJ105.0107 <- make.prerun.object(Proc.data.BJ105.1018, Grid, start=c(-71.636, -33.348), Calibration=calibration.BJ105)
+all.in.BJ112.0107 <- make.prerun.object(Proc.data.BJ112.1230v2, Grid, start=c(-71.636, -33.348), Calibration=calibration.BJ112)
+all.in.BC377.0107 <- make.prerun.object(Proc.data.BC377.1018, Grid, start=c(-71.636, -33.348), Calibration=calibration.BC377)
+})
+```
+
+
+## 5. Particle filter run (generate model)
+At this stage, the model output is generated. It contains: a table of positions at each twilight (`$Results$Quantiles`) and their statistics (mean, median values and credible intervals), a table of parameters of the movement model (`$Results$Movement.results`) and posterior distribution at every twilight (`$Results$Points.rle`) and at every transition between twilights (`$Results$Transitions.rle`). 
+Within `run.particle.filter`, the following parameters can be defined: 
+* `nParticles` - number of particles (1e4 is recommended for test and 1e6 for the analysis);
+* `threads` - amount of parallel threads to use for the run default is -1 that means all available except one;
+* `known.last` - TRUE if you know that in the end of the logging period tag occurred in a known place (FALSE is the default option);
+* `check.outliers` – FALSE by default. Set it TRUE if you wish on a fly outliers detection, we recommend to use it if the results have strong outliers.
+```{r, eval = F}
+# YOU CANNOT PASS run.particle.filter() TO A JOB OR IT WILL FAIL AT THE LAST STEP! (and doesn't save)
+# Run time: FAST, ~1-2 mins, with nParticles=1e4 (for testing); slower, ~30-40 mins with nParticles=1e6 (for real model)
+# check.outliers=TRUE will take ~10-20 minutes more but improve precision a bit
+
+# Set nparticles to use in all particle filters
+nParticles=1e6
+
+# Get Googe Maps API key: https://cloud.google.com/maps-platform/?apis=maps
+ggmap::register_google(key= "INSERT YOUR KEY HERE") # Register API key 
+has_google_key() # should show true 
+
+# BJ085
+# .0106.0 is fast trial with new grid
+# .0107.0 is full particle filter run with final grid
+# .0107.2 - trying another full particle filter one w/ final grid since first wasn't ideal
+Result.BJ085.0224.e6.1 <- run.particle.filter(all.in.BJ085.0107, threads=-1,
+                     nParticles=nParticles, known.last=TRUE,
+		                 precision.sd=25, check.outliers=TRUE)
+save(Result.BJ085.0224.e6.1, file="Result.BJ085.0224.e6.1.model.RData")
+Result.BJ085.final <- Result.BJ085.0224.e6.1
+# Final was formerly Result.BJ085.0107.2
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis/BJ085_ggmap_2022-02-24.0224.e6.1.pdf", useDingbats=F)
+map.FLightR.ggmap(Result.BJ085.0224.e6.1, plot.cloud=TRUE, map.options=NULL, plot.options=NULL, seasonal.donut.location="bottomleft", zoom="auto")
+dev.off()
+
+
+# BJ090
+.0106.0 is fast trial with new grid
+.0107.0 - full particle filter run with final grid
+Result.BJ090.0224.e6.1 <- run.particle.filter(all.in.BJ090.0107, threads=-1, # FINAL; Full run with 1e6 threads
+                     nParticles=nParticles, known.last=TRUE,
+		                 precision.sd=25, check.outliers=TRUE)
+Result.BJ090.final <- Result.BJ090.0224.e6.1
+# Final was formerly Result.BJ090.0107.0
+save(Result.BJ090.0224.e6.1, file="Result.BJ090.0224.e6.1.model.RData")
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis/BJ090_ggmap_2022-02-24.0224.e6.1.pdf", useDingbats=F)
+map.FLightR.ggmap(Result.BJ090.0224.e6.1, plot.cloud=TRUE, map.options=NULL, plot.options=NULL, seasonal.donut.location="bottomleft", zoom="auto")
+dev.off()
+
+
+# BJ091
+Result.BJ091.0224.e6.1 <- run.particle.filter(all.in.BJ091.0107, threads=-1,
+                     nParticles=nParticles, known.last=TRUE,
+		                 precision.sd=25, check.outliers=TRUE)
+Result.BJ091.final <- Result.BJ091.0224.e6.1
+# Final was formerly: Result.BJ091.0107.5
+save(Result.BJ091.0224.e6.1, file="Result.BJ091.0224.e6.1.model.RData")
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis/BJ091_ggmap_2022-02-24.0224.e6.1.pdf", useDingbats=F)
+map.FLightR.ggmap(Result.BJ091.0224.e6.1, plot.cloud=TRUE, map.options=NULL, plot.options=NULL, seasonal.donut.location="bottomleft", zoom="auto") 
+dev.off()
+
+
+# BJ104 
+Result.BJ104.0224.e6.1 <- run.particle.filter(all.in.BJ104.0107, threads=-1,
+                     nParticles=nParticles, known.last=TRUE,
+		                 precision.sd=25, check.outliers=TRUE)
+Result.BJ104.final <- Result.BJ104.0224.e6.1
+# Final was formerly: Result.BJ104.0107.0
+save(Result.BJ104.0224.e6.1, file="Result.BJ104.0224.e6.1.model.RData")
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis/BJ104_ggmap_2022-02-24.0224.e6.1.pdf", useDingbats=F)
+map.FLightR.ggmap(Result.BJ104.0224.e6.1, plot.cloud=TRUE, map.options=NULL, plot.options=NULL, seasonal.donut.location="bottomleft", zoom="auto") 
+dev.off()
+
+
+# BJ105
+# .0106.0 is fast trial with new grid
+# .0107.0 is full particle filter run with final grid
+Result.BJ105.0224.e6.1 <- run.particle.filter(all.in.BJ105.0107, threads=-1,
+                     nParticles=nParticles, known.last=TRUE,  
+		                 precision.sd=25, check.outliers=TRUE)
+Result.BJ105.final <- Result.BJ105.0224.e6.1
+# Final was formerly Result.BJ105.0107.0
+save(Result.BJ105.0224.e6.1, file="Result.BJ105.0224.e6.1.model.RData")
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis/BJ105_ggmap_2022-01-24.0224.e6.1.pdf", useDingbats=F)
+map.FLightR.ggmap(Result.BJ105.0224.e6.1, plot.cloud=TRUE, map.options=NULL, plot.options=NULL, seasonal.donut.location="bottomleft", zoom="auto") 
+dev.off()
+
+
+# BJ112
+# .0106.0 is fast trial with new grid
+# .0107.0 is full particle filter run with final grid
+Result.BJ112.0224.e6.1 <- run.particle.filter(all.in.BJ112.0107, threads=-1,
+                     nParticles=nParticles, known.last=TRUE, 
+		                 precision.sd=25, check.outliers=TRUE)
+Result.BJ112.final <- Result.BJ112.0224.e6.1
+# Final was formerly  Result.BJ112.0107.0
+save(Result.BJ112.0224.e6.1, file="Result.BJ112.0224.e6.1.model.RData")
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis/BJ112_ggmap_2022-01-24.0224.e6.1.pdf", useDingbats=F)
+map.FLightR.ggmap(Result.BJ112.0224.e6.1, plot.cloud=TRUE, map.options=NULL, plot.options=NULL, seasonal.donut.location="bottomleft", zoom="auto") 
+dev.off()
+
+
+# BC377
+.0106.0 is fast trial with new grid
+.0107.0 is full particle filter run with final grid
+Result.BC377.0224.e6.1 <- run.particle.filter(all.in.BC377.0107, threads=-1,
+                     nParticles=nParticles, known.last=TRUE,
+		                 precision.sd=25, check.outliers=TRUE)
+Result.BC377.final <- Result.BC377.0224.e6.1
+# Final was formerly Result.BC377.0107.0
+save(Result.BC377.0224.e6.1, file="Result.BC377.0224.e6.1.model.RData")
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/geolocator-analysis/BC377_ggmap_2022-01-24.0224.e6.1.pdf", useDingbats=F)
+map.FLightR.ggmap(Result.BC377.0224.e6.1, plot.cloud=TRUE, map.options=NULL, plot.options=NULL, seasonal.donut.location="bottomleft", zoom="auto")
+dev.off()
+```
+
+
+# Save best model results 
+```{r}
+# SAVE BEST MODEL RESULTS - all 0224.e6.1
+save(Result.BJ085.final, file="Result.BJ085.final.model.RData")
+save(Result.BJ090.final, file="Result.BJ090.final.model.RData") 
+save(Result.BJ091.final, file="Result.BJ091.final.model.RData") 
+save(Result.BJ104.final, file="Result.BJ104.final.model.RData") 
+save(Result.BJ105.final, file="Result.BJ105.final.model.RData")
+save(Result.BJ112.final, file="Result.BJ112.final.model.RData")
+save(Result.BC377.final, file="Result.BC377.final.model.RData")
+```
+
+NOTE! No model run will ever give the exact same results. This is because stochasticity is an inherent feature of this Bayesian analysis; this is normal. 
+
+# Stationary migration summary
+Print a simple summary of the periods of residence and movement:
+- Gives # days of data used and how many twilights (sunrise & sunset) these corresponded to
+- Tells you how far (km) tag moved
+- Gives you # stationary periods and length of stationary periods
+```{r, eval = F}
+# takes a few mins (or 10...) to run:
+# job::job({
+summary.BJ085.final <- stationary.migration.summary(Result.BJ085.final, prob.cutoff = 0.1, min.stay = 3)
+summary.BJ090.final <- stationary.migration.summary(Result.BJ090.final, prob.cutoff = 0.1, min.stay = 3)
+summary.BJ091.final <- stationary.migration.summary(Result.BJ091.final, prob.cutoff = 0.1, min.stay = 3)
+summary.BJ104.final <- stationary.migration.summary(Result.BJ104.final, prob.cutoff = 0.1, min.stay = 3)
+summary.BJ105.final <- stationary.migration.summary(Result.BJ105.final, prob.cutoff = 0.1, min.stay = 3)
+summary.BJ112.final <- stationary.migration.summary(Result.BJ112.final, prob.cutoff = 0.1, min.stay = 3)
+summary.BC377.final <- stationary.migration.summary(Result.BC377.final, prob.cutoff = 0.1, min.stay = 3)
+# })
+
+# save output 
+save(summary.BJ085.final, file="StatMigrSum.BJ085.final.RData") 
+save(summary.BJ090.final, file="StatMigrSum.BJ090.final.RData") 
+save(summary.BJ091.final, file="StatMigrSum.BJ091.final.RData")
+save(summary.BJ104.final, file="StatMigrSum.BJ104.final.RData")
+save(summary.BJ105.final, file="StatMigrSum.BJ105.final.RData")
+save(summary.BJ112.final, file="StatMigrSum.BJ112.final.RData")
+save(summary.BC377.final, file="StatMigrSum.BC377.final.RData")
+```
+
+
+# Save best migration tracks and outputs 
+This is important! Geolocator analysis involves lots of trial and error (and re-trying analyses with different calibration periods and tweaks) that it's easy to get files mixed up. 
+All geolocators: 
+Threshold=0.5
+Grid is the same.
+```{r}
+# Relevant files and metrics for final runs
+
+##### BJ085
+# Best run: .final run from 2/24/22 (saved as 0224.e6.1), check.outliers=TRUE
+# BJ085.1020.twilights and proc data 
+# tm1.BJ085 <- c(as.POSIXct("2017-12-03"), as.POSIXct("2018-01-30")) # calibration period 1
+# tm2.BJ085 <- c(as.POSIXct("2018-10-01"), as.POSIXct("2018-12-08")) # calibration period 2
+
+##### BJ090
+# Best run: 2/24/22 (saved as 0224.e6.1) with check.outliers=TRUE
+# tm1.BJ090 <- c(as.POSIXct("2018-02-05"), as.POSIXct("2018-02-16")) # calibration period 1
+# tm2.BJ090 <- c(as.POSIXct("2018-11-16"), as.POSIXct("2019-01-25")) # calibration period 2
+
+##### BJ091
+# Best run: 2/24/22 (saved as 0224.e6.1) with check.outliers=TRUE
+# tm1.BJ091 <- c(as.POSIXct("2018-02-03"), as.POSIXct("2018-02-20")) # calibration period 1
+# tm2.BJ091 <- c(as.POSIXct("2018-11-15"), as.POSIXct("2019-01-06")) # calibration period 2
+
+##### BJ104
+# Best run: 2/24/22 (saved as 0224.e6.1) check.outliers=TRUE 
+# tm1.BJ104 <- c(as.POSIXct("2018-01-28"), as.POSIXct("2018-02-12")) # calibration period 1
+# tm2.BJ104 <- c(as.POSIXct("2018-10-05"), as.POSIXct("2018-12-10")) # calibration period 2
+
+##### BJ105
+# Best run: 2/24/22 (saved as 0224.e6.1) with check.outliers=TRUE
+# tm1.BJ105 <- c(as.POSIXct("2018-02-11"), as.POSIXct("2018-02-20")) # .1222.7 (and .1223.8; and final) 
+# tm2.BJ105 <- c(as.POSIXct("2018-11-01"), as.POSIXct("2019-01-16")) 
+
+##### BJ112
+# Best run: 2/24/22 (saved as 0224.e6.1) with check.outliers=TRUE
+# tm1.BJ112 <- c(as.POSIXct("2018-02-08"), as.POSIXct("2018-02-21")) # .1230.8
+# tm2.BJ112 <- c(as.POSIXct("2018-11-05"), as.POSIXct("2018-12-30"))
+
+##### BC377
+# Best run: 2/24/22 (saved as 0224.e6.1)n with check.outliers=TRUE
+#save(BC377.1018.twilights, file="BC377.1018.twilights.TAGS_BEST-FINAL.RData")
+# tm1.BC377 <- c(as.POSIXct("2017-01-17"), as.POSIXct("2017-01-30")) # calibration period 1
+# tm2.BC377 <- c(as.POSIXct("2017-10-15"), as.POSIXct("2018-02-08")) # calibration period 2
+```
+
+
+
+########
+
+
+# START HERE!!! LOAD IN ALL FINAL TRACKS.
+```{r}
+# Load model results
+load("Result.BJ085.final.model.RData") 
+load("Result.BJ090.final.model.RData")
+load("Result.BJ091.final.model.RData")
+load("Result.BJ104.final.model.RData") 
+load("Result.BJ105.final.model.RData") 
+load("Result.BJ112.final.model.RData") 
+load("Result.BC377.final.model.RData") 
+
+# Load summary outputs 
+load("StatMigrSum.BJ085.final.RData") 
+load("StatMigrSum.BJ090.final.RData") 
+load("StatMigrSum.BJ091.final.RData")  
+load("StatMigrSum.BJ104.final.RData") 
+load("StatMigrSum.BJ105.final.RData") 
+load("StatMigrSum.BJ112.final.RData") 
+load("StatMigrSum.BC377.final.RData") 
+```
+
+
+# Plot latitude and longitude error estimates from result files
+What you're looking for in this plot: 
+1. Your track does not approach boundaries of the spatial grid you defined. If it does, change spatial extent and rerun the analysis (but within a few degrees is ok, per the Lisovski et al. shrike vignette online)
+2. There are no sudden jumps that have no uncertainty measurements around them. These are likely outliers that should be excluded beforehand. 
+3. Estimates of time periods spent by the bird at the calibration site presented by the model match the calibration periods assigned before the model run. If they do not, correct the calibration periods, redo the calibration and rerun the model. 
+4. There are no S-shape patterns in estimated latitude around equinox. Such patterns point at either incorrect calibration or very poor data. Try to improve your calibration periods or consider taking calibration data from another tag taken from the same species.
+```{r}
+# View 
+plot_lon_lat(Result.BJ085.final)
+plot_lon_lat(Result.BJ090.final)
+plot_lon_lat(Result.BJ091.final)
+plot_lon_lat(Result.BJ104.final)
+plot_lon_lat(Result.BJ105.final)
+plot_lon_lat(Result.BJ112.final)
+plot_lon_lat(Result.BC377.final)
+# 
+# # Write out 
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/LatLonResult_BJ085_2022-02-24.final.pdf", useDingbats=F)
+plot_lon_lat(Result.BJ085.final)
+dev.off()
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/LatLonResult_BJ090_2022-02-24.final.pdf", useDingbats=F)
+plot_lon_lat(Result.BJ090.final)
+dev.off()
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/LatLonResult_BJ091_2022-02-24.final.pdf", useDingbats=F)
+plot_lon_lat(Result.BJ091.final)
+dev.off()
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/LatLonResult_BJ104_2022-02-24.final.pdf", useDingbats=F)
+plot_lon_lat(Result.BJ104.final)
+dev.off()
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/LatLonResult_BJ105_2022-02-24.final.pdf", useDingbats=F)
+plot_lon_lat(Result.BJ105.final)
+dev.off()
+ 
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/LatLonResult_BJ112_2022-02-24.final.pdf", useDingbats=F)
+plot_lon_lat(Result.BJ112.final)
+dev.off()
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/LatLonResult_BC377_2022-02-24.final.pdf", useDingbats=F)
+plot_lon_lat(Result.BC377.final)
+dev.off()
+
+# Go to Eldar's source code to see what aesthetics mean
+# Dashed vertical lines indicate the first day of each month
+# Equinox dates are indicated in red horizontal lines
+```
+
+
+
+## 6. Estimation of arrival and departure dates
+The function `find.times.distribution` derives the time at which an animal arrived or departed from the area and provides the measure of its uncertainty. 
+First, select grid points of interest. For example in the current data we are interested in the date when our bird left the Netherlands. We will make  a boundary at 2&deg; longitude:
+```{r, eval = F}
+# Find arrival/departure dates from -33 LATITUDE (Grid[,2]; Grid[,1] is longitude)  
+Index.BJ085 <- which(Result.BJ085.final$Spatial$Grid[,2]>(-33.3))
+Index.BJ090 <- which(Result.BJ090.final$Spatial$Grid[,2]>(-33.3)) # final
+Index.BJ091 <- which(Result.BJ091.final$Spatial$Grid[,2]>(-33.3)) # final
+Index.BJ104 <- which(Result.BJ104.final$Spatial$Grid[,2]>(-33.3))
+Index.BJ105 <- which(Result.BJ105.final$Spatial$Grid[,2]>(-33.3))
+Index.BJ112 <- which(Result.BJ112.final$Spatial$Grid[,2]>(-33.3))
+Index.BC377 <- which(Result.BC377.final$Spatial$Grid[,2]>(-33.3))
+```
+
+Estimate probabilities of occurrence within the area at each twilight:
+```{r, eval = F}
+# each row corresponds to a crossing
+# each column corresponds to a probability of line crossing
+Arrivals.BJ085 <- find.times.distribution(Result.BJ085.final, Index.BJ085); Arrivals.BJ085
+Arrivals.BJ090 <- find.times.distribution(Result.BJ090.final, Index.BJ090); Arrivals.BJ090
+Arrivals.BJ091 <- find.times.distribution(Result.BJ091.final, Index.BJ091); Arrivals.BJ091
+Arrivals.BJ104 <- find.times.distribution(Result.BJ104.final, Index.BJ104); Arrivals.BJ104
+Arrivals.BJ105 <- find.times.distribution(Result.BJ105.final, Index.BJ105); Arrivals.BJ105
+Arrivals.BJ112 <- find.times.distribution(Result.BJ112.final, Index.BJ112); Arrivals.BJ112
+Arrivals.BC377 <- find.times.distribution(Result.BC377.final, Index.BC377); Arrivals.BC377
+
+# Now convert all times to Santiago local time:
+Arrivals.BJ085$Q.025 <- lubridate::with_tz(Arrivals.BJ085$Q.025, tzone="America/Santiago")
+Arrivals.BJ085$Q.25 <- lubridate::with_tz(Arrivals.BJ085$Q.25, tzone="America/Santiago")
+Arrivals.BJ085$Q.50 <- lubridate::with_tz(Arrivals.BJ085$Q.50, tzone="America/Santiago")
+Arrivals.BJ085$Q.75 <- lubridate::with_tz(Arrivals.BJ085$Q.75, tzone="America/Santiago")
+Arrivals.BJ085$Q.975 <- lubridate::with_tz(Arrivals.BJ085$Q.975, tzone="America/Santiago")
+
+Arrivals.BJ090$Q.025 <- lubridate::with_tz(Arrivals.BJ090$Q.025, tzone="America/Santiago")
+Arrivals.BJ090$Q.25 <- lubridate::with_tz(Arrivals.BJ090$Q.25, tzone="America/Santiago")
+Arrivals.BJ090$Q.50 <- lubridate::with_tz(Arrivals.BJ090$Q.50, tzone="America/Santiago")
+Arrivals.BJ090$Q.75 <- lubridate::with_tz(Arrivals.BJ090$Q.75, tzone="America/Santiago")
+Arrivals.BJ090$Q.975 <- lubridate::with_tz(Arrivals.BJ090$Q.975, tzone="America/Santiago")
+
+Arrivals.BJ091$Q.025 <- lubridate::with_tz(Arrivals.BJ091$Q.025, tzone="America/Santiago")
+Arrivals.BJ091$Q.25 <- lubridate::with_tz(Arrivals.BJ091$Q.25, tzone="America/Santiago")
+Arrivals.BJ091$Q.50 <- lubridate::with_tz(Arrivals.BJ091$Q.50, tzone="America/Santiago")
+Arrivals.BJ091$Q.75 <- lubridate::with_tz(Arrivals.BJ091$Q.75, tzone="America/Santiago")
+Arrivals.BJ091$Q.975 <- lubridate::with_tz(Arrivals.BJ091$Q.975, tzone="America/Santiago")
+
+Arrivals.BJ104$Q.025 <- lubridate::with_tz(Arrivals.BJ104$Q.025, tzone="America/Santiago")
+Arrivals.BJ104$Q.25 <- lubridate::with_tz(Arrivals.BJ104$Q.25, tzone="America/Santiago")
+Arrivals.BJ104$Q.50 <- lubridate::with_tz(Arrivals.BJ104$Q.50, tzone="America/Santiago")
+Arrivals.BJ104$Q.75 <- lubridate::with_tz(Arrivals.BJ104$Q.75, tzone="America/Santiago")
+Arrivals.BJ104$Q.975 <- lubridate::with_tz(Arrivals.BJ104$Q.975, tzone="America/Santiago")
+
+Arrivals.BJ105$Q.025 <- lubridate::with_tz(Arrivals.BJ105$Q.025, tzone="America/Santiago")
+Arrivals.BJ105$Q.25 <- lubridate::with_tz(Arrivals.BJ105$Q.25, tzone="America/Santiago")
+Arrivals.BJ105$Q.50 <- lubridate::with_tz(Arrivals.BJ105$Q.50, tzone="America/Santiago")
+Arrivals.BJ105$Q.75 <- lubridate::with_tz(Arrivals.BJ105$Q.75, tzone="America/Santiago")
+Arrivals.BJ105$Q.975 <- lubridate::with_tz(Arrivals.BJ105$Q.975, tzone="America/Santiago")
+
+Arrivals.BJ112$Q.025 <- lubridate::with_tz(Arrivals.BJ112$Q.025, tzone="America/Santiago")
+Arrivals.BJ112$Q.25 <- lubridate::with_tz(Arrivals.BJ112$Q.25, tzone="America/Santiago")
+Arrivals.BJ112$Q.50 <- lubridate::with_tz(Arrivals.BJ112$Q.50, tzone="America/Santiago")
+Arrivals.BJ112$Q.75 <- lubridate::with_tz(Arrivals.BJ112$Q.75, tzone="America/Santiago")
+Arrivals.BJ112$Q.975 <- lubridate::with_tz(Arrivals.BJ112$Q.975, tzone="America/Santiago")
+
+Arrivals.BC377$Q.025 <- lubridate::with_tz(Arrivals.BC377$Q.025, tzone="America/Santiago")
+Arrivals.BC377$Q.25 <- lubridate::with_tz(Arrivals.BC377$Q.25, tzone="America/Santiago")
+Arrivals.BC377$Q.50 <- lubridate::with_tz(Arrivals.BC377$Q.50, tzone="America/Santiago")
+Arrivals.BC377$Q.75 <- lubridate::with_tz(Arrivals.BC377$Q.75, tzone="America/Santiago")
+Arrivals.BC377$Q.975 <- lubridate::with_tz(Arrivals.BC377$Q.975, tzone="America/Santiago")
+
+# Courtesy time zone check
+attr(as.POSIXlt(Arrivals.BC377$Q.975),"tzone") 
+```
+
+
+
+## 7. Visualisation of the results
+
+## Plot ggmaps map
+I normally don't call ggmaps 'simple', but when it works it's pretty fast.
+Here's info on ggmap: https://github.com/dkahle/ggmap/blob/master/README.md
+Here's info on getting a Google Maps API key: http://ornithologyexchange.org/forums/topic/38315-mapflightrggmap-error/
+Here's an RBloggers post about ggmap and Google API: https://www.r-bloggers.com/geocoding-with-ggmap-and-the-google-api/
+```{r, eval = F}
+# Get Googe Maps API key: https://cloud.google.com/maps-platform/?apis=maps
+ggmap::register_google(key= "YOUR KEY HERE") # Register API key 
+has_google_key() # should show true 
+
+# PLOT GGMAP MOVEMENT MAPS
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/BJ085_ggmap_2022-01-07.final.pdf", useDingbats=F)
+map.FLightR.ggmap(Result.BJ085.final, plot.cloud=TRUE, map.options=NULL, plot.options=NULL, seasonal.donut.location="bottomleft", zoom="auto") 
+dev.off()
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/BJ090_ggmap_2022-01-07.final.pdf", useDingbats=F)
+map.FLightR.ggmap(Result.BJ090.final, plot.cloud=TRUE, map.options=NULL, plot.options=NULL, seasonal.donut.location="bottomleft", zoom="auto")
+dev.off()
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/BJ091_ggmap_2022-01-07.final.pdf", useDingbats=F)
+map.FLightR.ggmap(Result.BJ091.final, plot.cloud=TRUE, map.options=NULL, plot.options=NULL, seasonal.donut.location="bottomleft", zoom="auto") 
+dev.off()
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/BJ104_ggmap_2022-01-07.final.pdf", useDingbats=F)
+map.FLightR.ggmap(Result.BJ104.final, plot.cloud=TRUE, map.options=NULL, plot.options=NULL, seasonal.donut.location="bottomleft", zoom="auto")
+dev.off()
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/BJ105_ggmap_2022-01-07.final.pdf", useDingbats=F)
+map.FLightR.ggmap(Result.BJ105.final, plot.cloud=TRUE, map.options=NULL, plot.options=NULL, seasonal.donut.location="bottomleft", zoom="auto") 
+dev.off()
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/BJ112_ggmap_2022-01-07.final.pdf", useDingbats=F)
+map.FLightR.ggmap(Result.BJ112.final, plot.cloud=TRUE, map.options=NULL, plot.options=NULL, seasonal.donut.location="bottomleft", zoom="auto") 
+dev.off()
+
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/BC377_ggmap_2022-01-07.final.pdf", useDingbats=F)
+map.FLightR.ggmap(Result.BC377.final, plot.cloud=TRUE, map.options=NULL, plot.options=NULL, seasonal.donut.location="bottomleft", zoom="auto")
+dev.off()
+
+#get_stamenmap(location = 'Australia', zoom = 6) # test to see if ggmap is running ok 
+# use geocodeQueryCheck() to check how many queries you've accrued; 2500 or less/day is free
+```
+
+
+All migration outputs are inputted into patagona_migration_analysis.Rmd, which is where the end of this script picks up.
+
+
+---
+
+
+# Print environment for reproducibility
+```{r}
+sessionInfo() # List of packages and versions in use 
+```
+
+###########
+
+## END 

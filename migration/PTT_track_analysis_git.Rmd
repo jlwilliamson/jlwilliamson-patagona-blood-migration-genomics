@@ -1,0 +1,561 @@
+---
+title: "PTT data"
+author: "Jessie Williamson"
+date: "7/5/2019; last revised 2024-04-15"
+output: html_document
+---
+
+PTT track analyses from 177846 in Williamson et al. 2024, giant hummingbirds, *PNAS*. A complete archived movement record was obtained from Argos. Data are archived on MoveBank. 
+
+---
+```{R}
+rm(list=ls(all=TRUE)) # clear workspace 
+setwd("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona")
+```
+
+# Load packages
+```{R}
+library(reshape)
+library(car)
+library(GGally)
+library(ggplot2)
+library(stats4)
+library(dismo) # for gbif
+library(XML)
+library(ggmap)
+library(ggplot2)
+library(raster)
+library(maptools)
+library(argosfilter)
+library(rgdal)
+library(geosphere)
+library(rgdal)
+```
+
+
+# Load in the raw, unfiltered data (this will be fed into MoveBank for Douglas Argos Filtering)
+Complete archived data records were obtained from Argos in .csv format; that's what we read in here. 
+```{r}
+# Read in the data 
+ptt1.raw <- read.csv("//Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Argos_ID177846_DIAG_tabular_ALL_DATA.csv", header=TRUE, na.strings=c("","NA"))
+
+# Assign row numbers since sorting by date will get out of order
+ptt1.raw$rowID <- 1:nrow(ptt1.raw)
+#ptt2$rowID <- 1:nrow(ptt2)
+```
+
+
+# Prep data for Douglas Argos Filter on MoveBank 
+Our first step is to implement the rigorous Douglas Argos Filter (DAF). It is well known that Argos may *underestimate* error of location classes, and that location classes may also be associated with less error than Argos predicts. DAF implements a complicated series of algorithms to assess validity of data and has been shown to increase data accuracy by 50-90%. 
+
+But, to run the Douglas Argos Filter in MoveBank, we can't have missing data, so begin by dropping 'NA' location dates.
+We also need to remove data after July 2019 when our device stopped translating reliably, and we want to remove points that fall into the ocean (one or two of these are picked up by DAF automatically, but we know that points are errant because Patagona wouldn't be over open water during a stationary period.)
+```{r}
+# Drop NA values for date and location class
+ptt1.raw <- ptt1.raw[-which(is.na(ptt1.raw$Location.date)),] # Minus 22 missing dates
+
+# Check for duplicate date timestamps
+# If you run this before dropping NAs, the NAs get called as duplicates
+dup.ptt1 <- duplicated(ptt1.raw[, c("Location.date")]); sum(dup.ptt1) # No duplicates, so nothing to drop
+# Duplicate date-timestamps are also automatically filtered by DAF in MoveBank
+
+# Drop points in the ocean (any that exceed -71.652 longitude; coastal Algarrobo)
+ptt1.raw <- ptt1.raw[-which(ptt1.raw$Longitude < -71.652), ] 
+
+# Drop outlier point that falls way East into the plains of Argentina (well outside Patagona's range)
+# This gets picked up by DAF
+#ptt1 <- ptt1[-which(ptt1$Longitude > -64.30), ] 
+
+# Drop location class Z - a single observation
+ptt1.raw <- ptt1.raw[-which(ptt1.raw$Location.class == "Z"), ]
+
+# IMPORTANT! 
+# Drop points that extend beyond 2019-07-20 (day 157): when the device stopped transmitting reliably
+ptt1.raw$date_time <- as.POSIXct(ptt1.raw$Location.date, format="%m/%d/%y %H:%M")
+ptt1.raw$date <- format(ptt1.raw$date_time,"%m/%d/%y")
+ptt1.raw$date <- as.POSIXct(ptt1.raw$date, format="%m/%d/%y") # Change back to Posixct format
+ptt1.raw <- ptt1.raw[-which(ptt1.raw$date > "2019-07-21"), ] 
+# Keep this at 7-21; you'll end up with data from start through 7-19 but remember these data are in Mountain Time, NOT Santiago time (yet)! 
+
+# NOTE
+# I tried running the Douglas Argos Filter in R (D. A. Sweeney made a nice R function), documentation here: 
+# https://rdrr.io/github/dasweeney4423/tagproc/src/R/douglas.filter.R
+
+# Write out file you'll read into MoveBank online:
+#write.csv(ptt1.raw, "Argos_ID177846_DIAG_tabular_ALL_DATA_RPrelimWrangle_2022-02-21.csv")  
+```
+
+
+###### DOUGLAS ARGOS FILTER PROCESS IN MOVEBANK ##########
+Upload file into MoveBank and follow clunky drop-down menu process to select attributes and make sure columns are classified appropriately. Make sure ALL data are included/codified, as columns like "Nb mes" and "IQ" are required for DAF. 
+Navigate to the species page, then to "manage data". 
+An interactive map will appear with all data. Follow drop down menu instructions to set filter paramters and toy with different options. 
+DAF MoveBank Manual: https://www.movebank.org/cms/movebank-content/argos-data-filters
+
+My parameter settings: 
+Filter method = best hybrid (method specifically designed for birds; see Douglas et al. 2012 and Senner et al. 2020)
+KEEP_LC = 1
+MAXREDUN = 5 and 10 (I've tried both; 10 obviously keeps more data)
+KEEPLAST = NULL
+SKIPLOC = NULL
+MINRATE = 60 (I've toyed w/ 40, 50, and 100 - don't affect data much, if at all)
+RATECOEF= 15
+
+Hybrid filter parameters (I kept all defaults): 
+XMIGRATE = 2
+XOVERRUN = 1.5
+XDIRECT = 20
+XANGLE = 150
+XPERCENT = 20
+testp_0a = 2
+testp_bz = 3
+
+I then saved and downloaded data files with MAXREDUN = 5 and MAXREDUN=10. 
+
+***Keep in mind when reading in data to MoveBank: 
+- Argos IQ "quality indicator" is called "location index" 
+- When reading out from R, blank cells get converted to NA, so it's not possible to read in all additional sensor data (I can read in X1, which is temperature, but MoveBank throws an error when I try to read in X2 for voltage. This shouldn't matter because it's mostly a metric of device performance vs. anything we're analyzing)
+
+
+**Useful information about Argos location classes:**
+Description of Argos location classes provided by Argos online (https://www.argos-system.org/support-and-help/faq-localisation-argos/). 
+3 = error < 250 m (4 messages or more)
+2 = error 250-500 m (4 messages or more)
+1 = error 500-1500 m (4 messages or more)
+0 = error >1500 m (4 messages or more)
+A = unbounded error estimation (3 messages or more)
+B = unbounded error estimation (2 messages or more)
+Z = invalid location/failed location
+
+Senner et al. 2020, Frontiers in Ecology and Evolution has specific estimations of error radii: 
+LC 3 = 0.46 km; LC 2 = 0.91 km; LC 1 = 1.81 km; LC 0 = 6.66 km; LC A = 1.59 km; LC B = 1.95 km. (this also doesn't quite make sense - why would A have a lower error estimation than LC1, which is more accurate, especially when A and B don't have any (or reliable) error estimations?)
+
+In order to choose the highest quality locations, we've gone with the DAF filter. 
+
+
+# Load in DAF-filtered data, once downloaded from MoveBank
+Outputs of Douglas Argos Filter downloaded from MoveBank after filtering. 
+```{r}
+# Read in the data 
+daf5 <- read.csv("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Argos_ID177846_DIAG_tabular_ALL_DATA_DouglasArgosFilter_MAXREDUN5.csv", header=TRUE, na.strings=c("","NA"))
+daf10 <- read.csv("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Argos_ID177846_DIAG_tabular_ALL_DATA_DouglasArgosFilter_MAXREDUN10.csv", header=TRUE, na.strings=c("","NA"))
+
+# MAXREDUN 10 kept 649 of 847 observations (= dropped 198 outliers)
+# MAXREDUN 5 kept 533 of 847 observations (= dropped 314 outliers)
+# Annoyingly, we can't download a data frame of exluded points, which I'd like to see 
+
+# Assign row numbers since sorting by date will get out of order
+daf5$rowID <- 1:nrow(daf5)
+daf10$rowID <- 1:nrow(daf10)
+```
+
+
+# Take a look at retained locations against a map of Patagona's distribution
+Let's take a peek before filtering, data cleaning, and more wrangling.
+```{r}
+# Read in the Patagona distribution shapefile, available freely from BirdLife
+pgig_shape <- readOGR(dsn = "/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/patagona-shapefile/data_0.shp", layer = "data_0")
+
+# Check extent of shapefile with quick map
+SouthAmericaMap <- map_data("world", region = c("Colombia", "Venezuela", "Guyana", "Suriname", "French Guiana", "Ecuador", "Peru", "Chile", "Bolivia", "Argentina", "Brazil", "Paraguay", "Uruguay")) # Create basemap form GGplot
+ggplot(SouthAmericaMap, aes(x = long, y = lat, group = group)) +
+geom_polygon(fill = "cornsilk4", col = "cornsilk") + # fill = country color; col = lines between countries
+#geom_polygon(data = Low48_map, fill = "cornsilk4", col = "cornsilk") +
+geom_polygon(data = pgig_shape, fill = "darkorange3", alpha = 0.8) + # fill = species polygon
+theme_void() +
+theme(panel.background = element_rect(fill = "cornsilk")) + # fill = background map color 
+coord_map(projection = "gilbert")
+# Note that this shapefile is a ROUGH GUIDE ONLY for Patagona's distribution - the .shp is actually quite bad, i.e.
+# Cuts off eastern edge of Bolivian Andes, doesn't include northern Chile coast, etc. 
+# Link to shapefile/map here: https://www.iucnredlist.org/species/22687785/93168933
+
+# Quick map of our points and trajectory if we retain B quality locations
+data(wrld_simpl)
+plot(wrld_simpl, xlim=c(-80,-65), ylim=c(-42,-5), axes=TRUE, col="snow2") # plots gray world map 
+plot(pgig_shape)
+box() # restore the box around the map
+points(daf10$location.long, daf10$location.lat, col='#853FCD', pch=20, cex=1) # DAF 10
+lines(daf10$location.long, daf10$location.lat, col='red', pch=20, cex=1) 
+# points(daf5$location.long, daf5$location.lat, col='yellow', pch=20, cex=1) # DAF 5 
+# lines(daf5$location.long, daf5$location.lat, col='gray', pch=20, cex=1) 
+
+# Quick map of our points and trajectory on top of Patagona range slice
+data(wrld_simpl)
+plot(wrld_simpl, xlim=c(-80,-65), ylim=c(-42,-5), axes=TRUE, col="snow2") # plots gray world map 
+plot(pgig_shape)
+box() # restore the box around the map
+points(daf5$location.long, daf5$location.lat, col='#853FCD', pch=20, cex=1) # PTT coordinates
+lines(daf5$location.long, daf5$location.lat, col='red', pch=20, cex=1) # PTT coordinates
+```
+
+These both look great! Douglas Argos Filter has removed a lot of noise and increased reliability of our data. I briefly plotted all data (elev x date) and the shape of the data are consistent. But we want the highest quality data possible, so we'll choose to run with our DAF5 dataset, which is somewhat more filtered but also more precise. 
+
+
+# Wrangle date format
+```{R}
+# Before this will work need to convert date format to POSIXCT
+
+# Super weirdly, I can't convert a character string of date time stamp into POSIXct without first setting the time zone, so I'll start with that. 
+
+# We know (by checking attributes), that our bird's times are reported in Mountain Time (MDT), NOT GMT.  
+# Now convert date/time FROM MDT/MST to local Santiago time so we can really see what our bird is doing
+# Note that it's much better to call tz="America/Santiago" than to manually adjust for Daylight Savings or Standard bc
+# calling Santiago time will automatically do this for us. 
+# Santiago is +3 or +4 hours from Mountain Time, so we expect these times will jump up 
+daf5$date_time_MDT <- lubridate::with_tz(daf5$timestamp, tzone="America/Denver") # Convert time zone
+daf5$date_time <- lubridate::with_tz(daf5$date_time_MDT, tzone="America/Santiago") # Convert time zone
+attr(as.POSIXlt(daf5$date_time),"tzone") # Verify time zone - important!
+
+# Alterantive way to convert to local, but this changed to "chr" and was then impossible to wrangle; lubridate better.
+# daf5$date_time <- format(daf5$date_time_MDT, tz="America/Santiago", usetz=TRUE) # usetz=TRUE shows tz; KEEP FALSE
+# #   # (this is because including tz=TRUE will make this impossible to wrangle to extract just dates and times)
+# # daf5$date_time_local <- as.POSIXct(daf5$date_time, format="%m/%d/%y %H:%M") # convert back to POSIXct format (from forced chr w/ tz)
+
+# Now convert dates and times 
+daf5$time <- format(daf5$date_time,"%H:%M")
+daf5$date <- format(daf5$date_time,"%m/%d/%y")
+daf5$date <- as.POSIXct(daf5$date, format="%m/%d/%y") # Change back to Posixct format
+# Time is a character but I think this is fine 
+
+# Rename the temp and voltage  columns, as these might be useful
+names(daf5)[names(daf5) == "argos.sensor.1"] <- "temp_raw"
+#names(daf5)[names(daf5) == "X2"] <- "voltage_raw" # Remember don't have voltage after MoveBank DAF filter
+```
+
+
+# Convert raw temperature to standardized units of degrees C
+Even though we aren't working w/ temps.
+```{r}
+# Convert elevation (currently in km) to meters
+#ptt1$elev_m <- ptt1$Altitude*1000 # Elev converted in MoveBank DAF filter
+
+# Loop through dataset and assign convert temp to degrees C for all values of temp > 0
+# If no values of temp (i.e., temp_raw=0, fill temp_c with "NA")
+# Species and Department MUST be characters in order for this to work 
+daf5$temp_c <- NA # Instantiate column
+for(i in 1:nrow(daf5)){
+    if((daf5$temp_raw[i] > 0)){
+        daf5$temp_c[i] <- daf5$temp_raw[i]*0.474 - 35.662
+    }else if((daf5$temp_raw[i] == 0)){ 
+      daf5$temp_c[i] <- "NA"
+    }
+}
+```
+
+
+# Subset data
+A lot of junk columns got added by MoveBank.
+```{r}
+# Remove unneccessary columns
+daf5 <- daf5[ , -which(names(daf5) %in% c("event.id",
+                                          "visible",
+                                          "timestamp", 
+                                          "algorithm.marked.outlier",
+                                          "argos.best.level",
+                                          "argos.calcul.freq",
+                                          "argos.gdop",
+                                          "argos.iq",
+                                          "argos.lat1",
+                                          "argos.lat2",
+                                          "argos.lon1",
+                                          "argos.lon2",
+                                       #   "argos.nb.mes",
+                                          "argos.nb.mes.120", # Num messages rec'd by satellite w/ signal >-120 decibels
+                                          "argos.nopc",
+                                          "argos.sat.id",
+                                          "argos.sensor.2",
+                                          "argos.sensor.3",
+                                          "argos.sensor.4",
+                                          "argos.transmission.timestamp",
+                                          "argos.valid.location.algorithm",
+                                          "sensor.type",
+                                          "individual.taxon.canonical.name",
+                                          "individual.local.identifier",
+                                          "study.name",
+                                          "argos.semi.major",
+                                          "argos.semi.minor"))] 
+
+#ptt2 <- ptt2[ , -which(names(ptt2) %in% c("Is_SatReadings_Incomplete","Program_ID"))] 
+```
+
+
+
+# Reorder data 
+```{r}
+# Reorder columns of both datasets 
+daf5 <- daf5[c("tag.local.identifier","date_time", "date", "time", "location.lat", "location.long", "argos.altitude", "argos.error.radius", "argos.lc", "temp_c", "argos.nb.mes", "argos.orientation", "argos.pass.duration", "date_time_MDT", "temp_raw")]
+
+# Rename clunky column names
+daf5 <- daf5 %>% rename(ptt = tag.local.identifier, # First is new name, second is old name you want to change
+                        latitude = location.lat, 
+                        longitude = location.long,
+                        elev_m = argos.altitude,
+                        error.radius = argos.error.radius,
+                        location.class = argos.lc,
+                        orientation = argos.orientation,
+                        pass.duration = argos.pass.duration,
+                        number.messages = argos.nb.mes
+                        )
+```
+
+
+# Quickly check that points appear where they're supposed to on a map
+```{r}
+library(maptools)
+## Checking rgeos availability: TRUE
+data(wrld_simpl)
+plot(wrld_simpl, xlim=c(-80,-65), ylim=c(-42,-5), axes=TRUE, col="snow2") # plots gray world map 
+box() # restore the box around the map
+lines(daf5$longitude, daf5$latitude, col='#853FCD', pch=20, cex=1) # PTT coordinates
+```
+
+
+# Eliminate elevation error outliers
+While trying to investigate why a bird dropped from 3,667 meters to 102 m in a matter of hours, I dug into our data on MoveBank. I realized that on 2019-02-20 09:01:00 the bird was at 102 meters and at 2019-02-20 10:37:00 - just 1 hr and 37 minutes later, it was at 3,667. This seemed super suspicious. *Then* I realized that the latitudes and longitudes for both points were EXACTLY the same. Extra suss! I vetted this point on Google Earth, and it's truly at ~3,620 and change. So that 102 m reading? Just totally off. We need to deal with any instances like this that exist in our dataset. 
+```{r}
+# Firstly, let's look at latitude and longitude duplicates 
+dup <- duplicated(daf5[ , c("latitude", "longitude")]); sum(dup) 
+# There are 8 total instances in the data 
+# For reference, this is another way to drop duplicates that's nice:
+#testdup <- daf5 %>% distinct(latitude, longitude, .keep_all = TRUE)
+
+# Let's group by lat and lon and mark duplicates, then take a look at duplicate instances 
+daf5 <- daf5 %>% 
+  group_by(latitude, longitude) %>% 
+  mutate(latlon.duplicate = n()>1)
+# Based on spot checking it looks like most instances are duplicate coordinates taken across a short period of time, in 
+# which one elevation is spot on (per Google Earth) and one is totally off. 
+# HOWEVER, there's an instance where one point was taken on 3/4 and one on 3/18 in the exact same spot, and both elevations are correct. 
+
+# Let's pull elevations from elevation geonames and compare retrieved elevations with pings from Argos. Any discrepancy of 
+# 300 meters or more (criteria we used in Williamson and Witt 2021, Ornithology) is suggestive of major error and should be dropped. 
+# Rename lat and lon varibles so elevation() runs
+daf5 <- daf5 %>% rename(decimalLatitude = latitude, 
+                        decimalLongitude = longitude
+                        )
+
+# Fetch elevations with elevation() from rgbif
+# Need an rgeonames account to run this
+daf5 <- elevation(daf5, elevation_model="srtm3", username="YOUR USERNAME HERE")
+
+# Now calculate the difference between elevation_geonames estimates and Argos elevation estimates
+daf5$elev_diff <- daf5$elevation_geonames-daf5$elev_m
+
+# Now let's drop elevation estimates that differ by >300 meters (in negative or positive directions
+daf5 <- daf5[-which(daf5$elev_diff > 300 | daf5$elev_diff < -300), ]
+
+# ALTERNATIVELY! Could write a loop to calculate 
+# if duplicate=TRUE & > 300 or <-300, drop the observation from the dataset
+# else if elev_diff > 300 or <-300, replace elev_m with elevation_geonames elevation
+# This would be the more elegant solution
+
+# Now, we want to further filter by removing inaccurate locations
+# Since Location calss B has < 3 messages received by the satellite, we'll drop all location class B
+daf5 <- daf5[-which(daf5$location.class == "B"), ]
+```
+
+
+# Calculate days since start 
+```{r}
+# Make new variable for days since start
+# Remember to do this AFTER you run through filtering! We want start date to be accurate. 
+daf5$days_since_start <- difftime(as.POSIXct(daf5$date_time), as.POSIXct("2019-02-06 00:36:00", tz="America/Santiago"), units="days")
+daf5$days_since_start <- as.numeric(daf5$days_since_start) # Forcing conversion to numeric removes "days" units above
+```
+
+
+# Calculate speed and distance traveled 
+```{r}
+library(geosphere)
+
+# Calculate distance traveled between each consecutive lat/lon reading
+# This is super tricky to implement across subsequent rows!!! Much more so than it looks. 
+# Help here -- calculate Haversine distance across rows in a dataframe: 
+# https://stackoverflow.com/questions/68000621/distance-between-coordinates-in-dataframe-sequentially
+daf5["dist_m"] <- c(NA, sapply(seq.int(2,nrow(daf5)), function(i){
+                      distHaversine(c(daf5$longitude[i-1], daf5$latitude[i-1]),
+                            c(daf5$longitude[i], daf5$latitude[i]))
+                    })
+)
+
+daf5$dist_km <- daf5$dist_m/1000 # Convert to km distance 
+
+# Calculate interval lengths between each satellite reading; convert interval length in days to interval length in hours
+daf5 <- daf5 %>% mutate(interval_length_days = (days_since_start - lag(days_since_start))) 
+daf5$interval_length_hrs <- daf5$interval_length_days*24 # Convert to # hours 
+
+# Add in zero for our first NA-value intervals (doesn't affect data; this is really for plotting)
+daf5["1", "interval_length_days"] <- 0 # Force interval_length to zero
+daf5["1", "interval_length_hrs"] <- 0 # Force interval_length_hrs to zero 
+
+# Calculate flight speed per hour between each point as speed = (distance in meters)/(time in hours). 
+daf5 <- daf5 %>% mutate(m_per_hr_speed = dist_m/interval_length_hrs) # Meters per hour speed
+daf5 <- daf5 %>% mutate(km_per_hr_speed = dist_km/interval_length_hrs) # Kilometers per hour speed
+```
+
+# Plot quick speed plots
+```{r}
+# Plot outputs to take a look at what's going on:
+# Distance traveled over time
+ggplot(daf5, aes(x=interval_length_hrs, y=dist_km, color=location.class)) +
+  geom_point()
+# The 3 super long distances of 
+
+# Meters per hour
+ggplot(daf5, aes(x=dist_m, y=m_per_hr_speed, color=location.class)) +
+  geom_point()
+
+# Km per hour
+ggplot(daf5, aes(x=dist_km, y=km_per_hr_speed, color=location.class)) +
+  geom_point()
+```
+
+
+# Write out final polished data files 
+```{r}
+#write.csv(daf5, "Argos_PTT177846_DAF-filtered_and_RWrangled_2022-02-23.csv") # source: Argos archive file 
+#write.csv(ptt2, "Argos_PTT177845_DataWrangledInR_2022-01-15.csv") # source: Eli's PTT compiler version
+```
+
+
+### -----
+
+
+# Plot showing elev change (y-axis) and days since start (x-axis); Fig. S3
+```{r}
+# PTT 177846 (days since start on x, elev on y)
+(ptt1.elev.change <- ggplot(data=daf5, aes(x=days_since_start, y=elev_m)) +
+   # scale_colour_viridis(option="rocket", discrete=FALSE, name="TRBC") +
+    # p <- p + geom_boxplot(alpha = 0.5, outlier.size=0.1) # Add this back if categorical x-axis variable 
+    geom_point(size=1.8, alpha=1.0, colour="black") +
+    # stat_smooth(data=full1, aes(y=trbc), size=1.2, method="lm") +
+    # geom_jitter(width=0.8, height=0.8, alpha=0.8, size=2) + # jitter size should match geom_point size or it looks weird
+    labs(y="Elevation (m)", 
+         x="Days Since Start") + 
+    #scale_color_manual(values=c(neither="black", generalist="burlywood2", specialist="#853FCD")) + #336B87
+    #scale_color_manual(values=c(neither="#8C847B", generalist="#1CD2D8", specialist="#6E1EDC")) + #336B87
+    theme_classic() +
+    theme(legend.position = "none") + 
+    theme(legend.title=element_text(size=10)) +
+    #ggtitle("C") + # Assign panel number/header; this will be (a) because first in series of 3
+    theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+         plot.title = element_text(face="bold")) + # This makes panel header bold 
+       # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+    theme(plot.margin = unit(c(0.0,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left
+    theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=10), axis.title=element_text(size=10))
+)
+ggsave(ptt1.elev.change, filename="PTT177846_ElevTransitionPlot_DaysSinceStartVElev_2022-02-23.pdf", height=4.5, width=5.5, units="in")
+```
+
+
+
+# Now let's calculate rate of change during ascent - we'll take a look at just the days to first 3,992-m climb.
+```{r}
+# We want to look at the period that the bird is ascending. Data start on 2019-02-05, but bird bounces around sea level for a long time. According to our data, the bird starts ascending on 2/12 when it bounces from 88 m to 499 m. We'll consider that our start of ascent (day 1) 2/20 is its first jump to real high elevs (3,662) - let's see what that looks like..
+
+ascent <- daf5 %>% filter(date >= as.POSIXct("2019-02-12") & date <= as.POSIXct("2019-03-05"))
+# Take care with & and | in this call
+
+# Calculate days since ascent start
+# We want to calculate this afresh since "days_since_start" doesn't apply to our ascent journey 
+ascent$days_since_ascent_start <- difftime(as.POSIXct(ascent$date_time), as.POSIXct("2019-02-12 01:13:00", tz="America/Santiago"), units="days")
+ascent$days_since_ascent_start <- as.numeric(ascent$days_since_ascent_start) # Force conversion to numeric removes "days" units 
+# Calculate length of time intervals between points 
+ascent <- ascent %>% mutate(ascent_interval_length_days = (days_since_ascent_start - lag(days_since_ascent_start))) 
+ascent$ascent_interval_length_hrs <- ascent$ascent_interval_length_days*24 # Convert to # hours 
+
+# Now we want to remove intervals that are shorter than ~5 hrs so we get decent m/day estimates
+# But we can't have NA values and we want our first value to start at zero for plotting purposes
+# NOTE THAT THIS DATASET STARTS ON ROW 35!! THERE HAS TO BE A BETTER WAY TO DO THIS. 
+ascent["35", "ascent_interval_length_days"] <- 0 # Force interval_length to zero
+ascent["35", "ascent_interval_length_hrs"] <- 0 # Force interval_length_hrs to zero 
+
+# Now drop intervals > 0 (to keep our first observation) but < 4.9 to keep intervals of ~5 hrs or above
+ascent <- ascent[-which(ascent$ascent_interval_length_hrs > 0 & ascent$ascent_interval_length_hrs < 4.9), ] # Drop intervals < 5 hrs length 
+
+# So now we have 13 total observations, which means 12 intervals. 
+
+# We do NOT want to remove duplicate records. We talked about averaging elev values within the same 5-hr intervals
+# (or across single days, if we use day intervals), but this isn't relevant because we don't have duplicate elev timestamps
+# within the same 5-hour interval. 
+# dup.test <- duplicated(test[, c("date")]); sum(dup.test) # 3 duplicates
+# test <- test[!dup.test, ] # drop duplicate records
+
+# test at rate of change
+library(dplyr)
+ascent <- ascent %>% 
+        mutate(ascent_elev_diff = (elev_m - lag(elev_m))) %>% 
+        mutate(m_per_day = ascent_elev_diff/ascent_interval_length_days)  
+
+# Now force m_per_day first obst to be zero for plotting purposes
+ascent["35", "m_per_day"] <- 0 
+
+ascent$pointID <- 1:nrow(ascent)
+
+# Calculate haversine distance between points for this first part of the journey
+ascent["dist_m"] <- c(NA, sapply(seq.int(2,nrow(ascent)), function(i){
+                      distHaversine(c(ascent$longitude[i-1], ascent$latitude[i-1]),
+                            c(ascent$longitude[i], ascent$latitude[i]))
+                    })
+)
+
+ascent$dist_km <- ascent$dist_m/1000 # Convert to km distance 
+
+# Calculate flight speed per hour between each point as speed = (distance in meters)/(time in hours). 
+ascent <- ascent %>% mutate(m_per_hr_speed = dist_m/interval_length_hrs) # Meters per hour speed
+ascent <- ascent %>% mutate(km_per_hr_speed = dist_km/interval_length_hrs) # Kilometers per hour speed
+
+# Now, for plotting purposes: drop point ID 21 because we want the bird to end at altitude 
+ascent <- ascent[-which(ascent$pointID==21), ]
+
+
+#####
+
+# Write out ascent
+#write.csv(ascent, "Argos_PTT177846_Ascent_21Days_2022-02-24.csv") # source: Argos archive file
+```
+
+
+# PLOT OF FIRST 21 DAYS ASCENT
+```{r}
+# Plot rate of ascent during the first 21 days of the migratory journey (bird's first big push upwards )
+(rate.of.ascent <- ggplot(data=ascent, aes(x=days_since_ascent_start, y=m_per_day)) +
+    geom_point(size=2.4, alpha=1.0, colour="black") +
+    geom_line(size=0.6, alpha=0.6, colour="black", linetype=2) +
+    geom_point(x=0, y=0, size=2.4, alpha=1.0, colour="black") + # Add starting point for Chile
+    annotate(geom="text", x=0.6, y=-190, label="Algarrobo,\nChile\n(Sea level)", size=2.5) +
+    geom_point(x=6.009722, y=1184.37870, size=2.4, alpha=1.0, colour="black") + # Add starting point for Chile
+    annotate(geom="text", x=7, y=1200, label="Coquimbo,\nChile\n(2,272 m)", size=2.5) + # Acclimatization midpoint
+    geom_point(x=9.372917, y=-26.30872, size=2.4, alpha=1.0, colour="black") + # Salta, Argentina
+    annotate(geom="text", x=10.2, y=-125, label="Salta,\nArgentina\n(1,887 m)", size=2.5) +
+    geom_point(x=20.975000, y=1657.76567, size=2.4, alpha=1.0, colour="black") + # Ending point
+    annotate(geom="text", x=20, y=1600, label="Jujuy,\nArgentina\n(3,994 m)", size=2.5) +
+   # coord_cartesian(ylim = c(-303, 750)) + 
+   # coord_cartesian(xlim = c(-33, -24)) + 
+    labs(y="Rate of Ascent (m/day)", 
+         x="Day of Journey") + 
+    theme_classic() +
+    theme(legend.position = "none") + 
+    theme(legend.title=element_text(size=10)) +
+    #ggtitle("C") + # Assign panel number/header; this will be (a) because first in series of 3
+    theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+         plot.title = element_text(face="bold")) + # This makes panel header bold 
+       # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+    theme(plot.margin = unit(c(0.0,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left
+    theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=10), axis.title=element_text(size=12))
+)
+#ggsave(rate.of.ascent, filename="PTT177846_ElevTransitionPlot_DaysSinceStartVElev_5hrInterval_21days_2022-02-26.pdf", height=4, width=8.5, units="in")
+```
+
+
+---
+
+
+# Print environment for reproducibility
+```{r}
+sessionInfo() # List of packages and versions in use 
+```
+
+###########
+
+## END 
