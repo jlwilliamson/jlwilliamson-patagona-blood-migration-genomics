@@ -1,0 +1,730 @@
+---
+title: "Patagona blood analysis"
+author: "Jessie Williamson"
+date: "Last revised 2024-04-15"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+Blood analyses in Williamson et al. 2024, giant hummingbirds, *PNAS*. 
+
+
+```{R, echo=FALSE}
+# GLOBAL R chunk options here (hide message w/ echo=FALSE)
+knitr::opts_chunk$set(comment = NA, message = FALSE, warning = FALSE, width = 100)
+knitr::opts_chunk$set(fig.align = "center", fig.height = 4, fig.width = 6)
+knitr::opts_chunk$set(cache = TRUE, autodep=TRUE)
+```
+
+# Load packages
+```{R}
+library(reshape)
+library(car)
+library(GGally)
+library(Hmisc)
+library(gridExtra)
+library(stats)
+library(gplots)
+library(ggplot2)
+library(lsmeans)
+library(effects)
+library(dplyr)
+library(gridExtra)
+library(lattice)
+library(survival)
+library(AICcmodavg)
+library(MuMIn)
+library(stats4) 
+library(PMCMR)
+library(fmsb)
+library(faraway)
+library(reshape2)
+library(popbio)
+library(arm)
+library(ggfortify) # PCA
+library(adegenet)
+library(cluster)
+library(plyr)
+library(dplyr)
+library(ape)
+library(nlme)
+library(ggsignif) # significance bars in ggplot
+library(ggbeeswarm)
+library(nortest)
+library(FSA)
+```
+
+
+```{R}
+rm(list=ls(all=TRUE)) # clear workspace 
+setwd("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona")
+```
+
+
+---
+
+
+# load in data 
+```{R}
+# Load functions 
+source("ada_functions.R") # Erik's ADA functions for clean & collated lm diag plots
+source("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/ComparativeHummingbirdBlood/1_r_scripts/Rfunctions.R") # Nora's functions
+
+# Read in data (cleaned and filtered in Patagona_DataWrangling.Rmd)
+pgig <- read.csv("Patagona_Blood_Morpho_Tissue_Master_FilteredForAnalysis_2024-01-01.csv", na.strings = c("", "NA"), stringsAsFactors = TRUE)
+# Was 2023-05-22
+pgig <- pgig[ , !(colnames(pgig) %in% c("X"))] 
+```
+
+
+# Select only blood data you'll use in blood analyses 
+Since this script is dedicated towards blood, let's make a blood subset; this will help us eliminate missing data, etc.  
+```{r}
+# The order that you write these in here is the order they'll appear in once subsetted
+blood <- subset(pgig, select = -c(bill,
+                                 billhead,
+                                 wing,
+                                 tail,
+                                 tailfork,
+                                 tarsus,
+                                 rel.heart,
+                                 rel.liver,
+                                 rel.lung,
+                                 supra,
+                                 pmaj,
+                                 flight.muscle.mass,
+                                 rel.flight.muscle.mass,
+                                 elev.original, # we use elev.final
+                                 elevation_geonames  # we use elev.final
+                                        ) )
+```
+
+
+# First, Remove no blood data birds and 'NA' analysis lineage birds 
+We only want to analyze data for birds for which we have northern and southern lineages, so let's drop all unknowns, indicated in the data with NA values. 
+```{r}
+# Now, subset by only those individuals that have blood data
+bloodsub <- blood[which(blood$blooddataYN =="yes"),] # Keep 175 records
+# Note that the hybrid doesn't have blood data associated with it, so we don't need to worry about dropping it
+```
+
+
+
+# OUTLIER ASSESSMENT APPROACH:
+Blood data values are anomalous in in nestlings and fledglings and normalize quickly within a few months of fledging. 
+Bursa lasts longer than anomalous juvenile blood characteristics, so presence/absence of bursa isn't 100% correlative with ages that would be important for blood analyses. In Williamson et al. (comparative hummingbird blood paper), we took a multi-pronged approach to the issue of age-based and distribution outliers. We'll do the same here and evaluate a *combination* of characteristics to assess for age-based outliers, in particular:
+* 1) First, evaluate and conservatively remove anomalous blood values (i.e., distribution outliers; see code chunks below)
+* 2) Then, analyze distribution of blood values. If juvenile-colored values look normal and fit in with others, don't remove on the basis of having a bursa. But, if blood values look weird *AND* a bird has a "large" bursa, then remove value. 
+* 3) "Large" bursa is ~2x2 mm or greater for hummingbirds, indicative of a bird recently out of the nest.  
+* 4) This approach allows us to identify and possibly drop any errant values caused by age and retain all values of juveniles that fall within the "normal" adult range. 
+* 5) Also NOTE (though this is only relevant if non-vouchered Chilean Patagona have been included): Any non-vouchered (i.e., tracked) Patagona whose age was scored by plumage shouldn't be eliminated, as juvenile plumage lasts much longer than anomalous juvenile blood values. 
+
+
+Assess distributions. 
+Then, 
+
+# Remove outliers
+```{r}
+# REMOVE OUTLIERS 
+bloodsub <- bloodsub[-which(bloodsub$hb < 14 | bloodsub$hb > 24),] # -3 outliers
+bloodsub <- bloodsub[-which(bloodsub$hct.percent < 45 | bloodsub$hct.percent > 66),] # -7 outliers
+# bloodsub <- bloodsub[-which(bloodsub$trbc < 2.5 | bloodsub$trbc > 9.5),] # NO TRBC OUTLIERS
+bloodsub <- bloodsub[-which(bloodsub$mcv < 47 | bloodsub$mcv > 166),] # # -2 outliers
+bloodsub <- bloodsub[-which(bloodsub$mch < 18 | bloodsub$mch > 50),] # -4 outliers 
+bloodsub <- bloodsub[-which(bloodsub$mchc < 29.6 | bloodsub$mchc > 36),] # -9 outliers 
+
+# Dataset contains 148 observations
+
+# Summary of observations dropped
+percent.outliers.omitted.hb <- round((3/175)*100,2); percent.outliers.omitted.hb
+percent.outliers.omitted.hct <- round((7/175)*100,2); percent.outliers.omitted.hct
+#no TRBC outliers
+percent.outliers.omitted.mcv <- round((2/175)*100,2); percent.outliers.omitted.mcv
+percent.outliers.omitted.mch <- round((4/175)*100,2); percent.outliers.omitted.mch
+percent.outliers.omitted.mchc <- round((9/175)*100,2); percent.outliers.omitted.mchc
+
+p <- ggpairs(subset(bloodsub, select = c(mass, hb, hct, trbc, mcv, mch, mchc))); print(p)
+```
+
+
+
+# Assess age-based outliers
+Blood data values are anomalous in in nestlings and fledglings and normalize quickly within a few months of fledging. 
+Bursa lasts longer than anomalous juvenile blood characteristics, so presence/absence of bursa isn't 100% correlative with ages that would be important for blood analyses. In Williamson et al. (comparative hummingbird blood paper), we took a multi-pronged approach to this issue. We'll do the same here and evaluate a *combination* of characteristics:
+* 1) First, eliminate anomalous blood values (DONE; see code chunks above)
+* 2) Then, analyze distribution of blood values. If juvenile-colored values look normal and fit in with others, don't remove on the basis of having a bursa. But, if blood values look weird *AND* a bird has a "large" bursa, then remove value. 
+* 3) "Large" bursa is ~2x2 mm or greater for hummingbirds, indicative of a bird recently out of the nest.  
+* 4) This approach allows us to identify and possibly drop any errant values caused by age and retain all values of juveniles that fall within the "normal" adult range. 
+* 5) Also NOTE (though this is only relevant if non-vouchered Chilean Patagona have been included): Any non-vouchered (i.e., tracked) Patagona whose age was scored by plumage shouldn't be eliminated, as juvenile plumage lasts much longer than anomalous juvenile blood values. 
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+# GGpairs comparison plot colored by age 
+p <- ggpairs(bloodsub[ ,c("elev.final", "hb", "hct", "trbc", "mcv", "mch", "mchc", "age")], 
+            mapping=ggplot2::aes(colour=bloodsub$age), lower=list(continuous="smooth"), 
+            diag = list(continuous = "density")) #, upper = list(params = list(corSize = 6)) )
+print(p) 
+
+bloodsub <- bloodsub[-which(bloodsub$identifier =="162964"),] # HAR Peru bird; super low Hb and big bursa
+bloodsub <- bloodsub[-which(bloodsub$identifier =="279017"),] # Chile juvi; super low Hb and big bursa
+bloodsub <- bloodsub[-which(bloodsub$identifier =="279034"),] # Chile juvi; super low Hb and big bursa
+bloodsub <- bloodsub[-which(bloodsub$identifier =="279049"),] # Chile juvi; super low Hb and big bursa
+bloodsub <- bloodsub[-which(bloodsub$identifier =="279070"),] # Chile juvi; super low Hb and big bursa
+
+# Now, drop one other influential lowland southern bird (a geo bird!) that has SUPER high Hb and Hct that were influential
+# for ANOVA fit below (Hb and Hct Cook's D values were 0.25, so this observation was highly influential in model fit; high leverage too)
+bloodsub <- bloodsub[-which(bloodsub$identifier =="252134"),] 
+
+# This looks good in assessments. 
+```
+
+
+## Make trait-specific subsets & remove outliers within each subset 
+Since we only have 166 blood values and since we want to maximize those that we have (and since some birds are outliers for some traits but not others and are precious  bc accompanied by genomic data, we'll make trait specific subsets, then assess and remove outliers for each trait)
+
+(But note that below I don't end up using this - I just remove is.na(population) from bloodsub and ANOVAs/ggplot filter out NAs automatically)
+```{r}
+# Subset by individual blood traits 
+hb.sub <- subset(bloodsub, select=c(rowID, identifier, museum, country, elev.final, month, year, population, analysis.lineage, sex, age, mass, hb, blooddataYN)) # Hb subset
+
+hct.sub <- subset(bloodsub, select=c(rowID, identifier, museum, country, elev.final, month, year, population, analysis.lineage, sex, age, mass, hct, hct.percent, blooddataYN)) # Hct subset
+
+trbc.sub <- subset(bloodsub, select=c(rowID, identifier, museum, country, elev.final, month, year, population, analysis.lineage, sex, age, mass, trbc, blooddataYN)) # trbc subset
+
+mcv.sub <- subset(bloodsub, select=c(rowID, identifier, museum, country, elev.final, month, year, population, analysis.lineage, sex, age, mass, mcv, blooddataYN)) # MCV subset
+
+mch.sub <- subset(bloodsub, select=c(rowID, identifier, museum, country, elev.final, month, year, population, analysis.lineage, sex, age, mass, mch, blooddataYN)) # MCH subset
+
+mchc.sub <- subset(bloodsub, select=c(rowID, identifier, museum, country, elev.final, month, year, population, analysis.lineage, sex, age, mass, mchc, blooddataYN)) # MCHC subset
+
+
+# Drop NA observations for subsets Hb
+hb.sub <- hb.sub[-which(is.na(hb.sub$hb)),] # 136 total
+hct.sub <- hct.sub[-which(is.na(hct.sub$hct)),] # 94 total
+trbc.sub <- trbc.sub[-which(is.na(trbc.sub$trbc)),] # 74 records total
+mcv.sub <- mcv.sub[-which(is.na(mcv.sub$mcv)),] # 73 total
+mch.sub <- mch.sub[-which(is.na(mch.sub$mch)),] # 72 total
+mchc.sub <- mchc.sub[-which(is.na(mchc.sub$mchc)),] # 89 total
+```
+
+
+# Pull levels for each blood trait subset for sample size reporting in supplement     
+```{r}
+# Drop birds of unknown population so we can focus on our clean comparison of AML, AMH, HAR
+hb.sub.mod <- hb.sub[-which(is.na(hb.sub$population)),] # 122 records 
+hct.sub.mod <- hct.sub[-which(is.na(hct.sub$population)),] # 80 records 
+trbc.sub.mod <- trbc.sub[-which(is.na(trbc.sub$population)),] # 61 records 
+mcv.sub.mod <- mcv.sub[-which(is.na(mcv.sub$population)),] # 60 records 
+mch.sub.mod <- mch.sub[-which(is.na(mch.sub$population)),] # 59 records 
+mchc.sub.mod <- mchc.sub[-which(is.na(mchc.sub$population)),] # 75 records 
+
+# Re-level factors so that AML comes before AMH: 
+# (this is also necessary because "unknown" remains as a "shadow level" after dropping; i.e. we want 3 levels, not 4)
+hb.sub.mod$population <- factor(hb.sub.mod$population, levels = c("AML", "AMH", "HAR")) 
+hct.sub.mod$population <- factor(hct.sub.mod$population, levels = c("AML", "AMH", "HAR")) 
+trbc.sub.mod$population <- factor(trbc.sub.mod$population, levels = c("AML", "AMH", "HAR")) 
+mcv.sub.mod$population <- factor(mcv.sub.mod$population, levels = c("AML", "AMH", "HAR")) 
+mch.sub.mod$population <- factor(mch.sub.mod$population, levels = c("AML", "AMH", "HAR")) 
+mchc.sub.mod$population <- factor(mchc.sub.mod$population, levels = c("AML", "AMH", "HAR")) 
+
+
+# Check levels
+levels(hb.sub.mod$population)
+levels(hct.sub.mod$population)
+levels(trbc.sub.mod$population)
+levels(mcv.sub.mod$population)
+levels(mch.sub.mod$population)
+levels(mchc.sub.mod$population)
+
+
+# Counts for trait and population: 
+count(hb.sub.mod$population)
+# 1 AML   31
+# 2 AMH   14
+# 3 HAR   77
+
+count(hct.sub.mod$population)
+# 1 AML   13
+# 2 AMH   13
+# 3 HAR   54
+
+count(trbc.sub.mod$population)
+# 1 AML   13
+# 2 AMH    5
+# 3 HAR   43
+
+count(mcv.sub.mod$population)
+# 1 AML   13
+# 2 AMH    5
+# 3 HAR   42
+
+count(mch.sub.mod$population)
+# 1 AML   12
+# 2 AMH    4
+# 3 HAR   43
+
+count(mchc.sub.mod$population)
+# 1 AML   12
+# 2 AMH   12
+# 3 HAR   51
+```
+
+
+
+------
+
+
+## STATS 
+
+# Blood analysis: 
+```{R}
+# Begin by dropping birds of unknown population so we can focus on our clean comparison of AML, AMH, HAR
+#bloodsub.mod <- bloodsub[-which(bloodsub$population == "unknown"),] 
+bloodsub.mod <- bloodsub[-which(is.na(bloodsub$population)),] # # 128 records 
+
+# Re-level factors so that AML comes before AMH: 
+# (this is also necessary because "unknown" remains as a "shadow level" after dropping; i.e. we want 3 levels, not 4)
+bloodsub.mod$population <- factor(bloodsub.mod$population, levels = c("AML", "AMH", "HAR")) 
+levels(bloodsub.mod$population)
+
+# Counts for each population: 
+count(bloodsub.mod$population)
+
+# Hb 
+# Run ANOVA
+aov.hb <- aov(hb ~ population, data=bloodsub.mod); summary(aov.hb)
+Anova(aov.hb, type=3)
+round(AIC(aov.hb), 3) 
+lm_diag_plots(aov.hb)
+
+# Test ANOVA assumptions (for both, <0.05 = violates assumptions; >0.05 "not sig" = normal/does not violate assumptions)
+# Formal test for normality w/ Anderson-Darling test
+ad.test(aov.hb$residuals) # violates assumptions 
+# Formal test for equal variances w/ Levene's test (normality not assumed)
+leveneTest(hb ~ population, data=bloodsub.mod) # Variances equal 
+
+# Because lack of normality violates ANOVA assumptions, we thus need to use Kruskal-Wallis.
+kw.hb <- kruskal.test(hb ~ population, data=bloodsub.mod); kw.hb
+# # Kruskal-Wallis chi-squared = 38.061, df = 2, p-value = 5.436e-09data:  hb by population
+# Kruskal-Wallis chi-squared = 38.061, df = 2, p-value = 5.436e-09
+# There are significant differences in Hb among populations
+
+# Tukey's post-hoc test (use this to get pop means)
+#lsmeans(aov.hb, list(pairwise ~ population           ), adjust = "tukey")
+
+# Conduct Dunn's Test of multiple comparisons (basically nonparametric equivalent of lsmeans/Tukey's post-hoc)
+# Performs Dunn's (1964) test of multiple comparisons following a significant Kruskal-Wallis test, 
+# possibly with a correction to control the experimentwise error rate.
+ dunnTest(hb ~ population, data=bloodsub.mod, kw=TRUE)
+#   Comparison          Z      P.unadj        P.adj
+# 1  AMH - AML  4.8466746 1.255481e-06 2.510962e-06
+# 2  AMH - HAR  0.9010223 3.675765e-01 3.675765e-01
+# 3  AML - HAR -6.1062926 1.019720e-09 3.059160e-09
+ 
+ #  population lsmean    SE  df lower.CL upper.CL
+ # AML          17.0 0.269 119     16.5     17.5
+ # AMH          19.7 0.401 119     18.9     20.5
+ # HAR          19.2 0.171 119     18.8     19.5
+ 
+
+# AML have significantly lower [Hb] than AMH (p < 0.00001)
+# AML have significantly lower [Hb] than HAR (p < 0.00001)
+# No significant difference in [Hb] values between AMH and HAR (p = 0.36)
+
+
+## -----
+
+# HCT
+# Run ANOVA
+aov.hct <- aov(hct ~ population, data=bloodsub.mod); summary(aov.hct)
+Anova(aov.hct, type=3)
+round(AIC(aov.hct), 3) 
+lm_diag_plots(aov.hct)
+
+# Test ANOVA assumptions (for both, <0.05 = violates assumptions; >0.05 "not sig" = normal/does not violate assumptions)
+# Formal test for normality w/ Anderson-Darling test
+ad.test(aov.hct$residuals) # normal
+# Formal test for equal variances w/ Levene's test (normality not assumed)
+leveneTest(hct ~ population, data=bloodsub.mod) # Variances equal 
+
+# Because lack of normality violates ANOVA assumptions, we thus need to use Kruskal-Wallis.
+# kw.hct <- kruskal.test(hct ~ population, data=bloodsub.mod)
+# kw.hct
+
+# Tukey's post-hoc test
+lsmeans(aov.hct, list(pairwise ~ population           ), adjust = "tukey")
+# $`lsmeans of population`
+#  population lsmean      SE df lower.CL upper.CL
+#  AML         0.537 0.00916 77    0.519    0.555
+#  AMH         0.608 0.00916 77    0.590    0.627
+#  HAR         0.579 0.00450 77    0.570    0.588
+
+# $`pairwise differences of population`
+#  1         estimate     SE df t.ratio p.value
+#  AML - AMH  -0.0714 0.0130 77  -5.511  <.0001
+#  AML - HAR  -0.0423 0.0102 77  -4.144  0.0003
+#  AMH - HAR   0.0291 0.0102 77   2.853  0.0152
+
+# AMH has significantly higher Hct than AML (p < 0.0001) * 
+# HAR has significantly higher Hct than AML (p = 0.0003) * 
+# AMH significant higher Hct than HAR (p = 0.01) *   
+
+## -----
+
+
+# TRBC
+# Run ANOVA
+aov.trbc <- aov(trbc ~ population, data=bloodsub.mod); summary(aov.trbc)
+Anova(aov.trbc, type=3)
+round(AIC(aov.trbc), 3) 
+lm_diag_plots(aov.trbc)
+
+# Test ANOVA assumptions (for both, <0.05 = violates assumptions; >0.05 "not sig" = normal/does not violate assumptions)
+# Formal test for normality w/ Anderson-Darling test
+ad.test(aov.trbc$residuals) # normal
+# Formal test for equal variances w/ Levene's test (normality not assumed)
+leveneTest(trbc ~ population, data=bloodsub.mod) # Variances equal 
+
+lsmeans(aov.trbc, list(pairwise ~ population           ), adjust = "tukey")
+ # population lsmean    SE df lower.CL upper.CL
+ # AML          5.54 0.322 58     4.90     6.19
+ # AMH          5.63 0.520 58     4.59     6.67
+ # HAR          5.90 0.177 58     5.55     6.26
+
+# $`pairwise differences of population`
+#  1         estimate    SE df t.ratio p.value
+#  AML - AMH  -0.0885 0.612 58  -0.145  0.9885
+#  AML - HAR  -0.3624 0.368 58  -0.985  0.5891
+#  AMH - HAR  -0.2740 0.549 58  -0.499  0.8721
+
+# No difference in TRBC between AML and AMH (p = 0.986) 
+# No difference in TRBC between AML and HAR (p = 0.589) 
+# No difference in TRBC between AMH and AMH (p = 0.872)
+
+
+## -----
+
+# MCV
+# Run ANOVA
+aov.mcv <- aov(mcv ~ population, data=bloodsub.mod); summary(aov.mcv)
+Anova(aov.mcv, type=3)
+round(AIC(aov.mcv), 3) 
+lm_diag_plots(aov.mcv)
+  # When I peak at these plots I see that obs 39 (NK168546) and 195 (NK279280) have moderate Cook's D values
+  # This is likely because obs 39 has the lowest MCV value (86) in the small dataset; obs 195 has the highest (136 MCV)
+  # Since we only have a sample size of 5, removing these wouldn't be ideal...esp. since they don't cross Cook's D or leverage thresholds
+  # But something to note
+
+#Test ANOVA assumptions (for both, <0.05 = violates assumptions; >0.05 "not sig" = normal/does not violate assumptions)
+# Formal test for normality w/ Anderson-Darling test
+ad.test(aov.mcv$residuals) # normal
+# Formal test for equal variances w/ Levene's test (normality not assumed)
+leveneTest(mcv ~ population, data=bloodsub.mod) # Variances equal 
+
+lsmeans(aov.mcv, list(pairwise ~ population           ), adjust = "tukey")
+# $`lsmeans of population`
+#  population lsmean   SE df lower.CL upper.CL
+#  AML          98.9 5.91 57     87.0      111
+#  AMH         112.4 9.54 57     93.3      131
+#  HAR         102.5 3.29 57     95.9      109
+# 
+# $`pairwise differences of population`
+#  1         estimate    SE df t.ratio p.value
+#  AML - AMH   -13.51 11.22 57  -1.204  0.4558
+#  AML - HAR    -3.61  6.77 57  -0.533  0.8553
+#  AMH - HAR     9.90 10.09 57   0.981  0.5916
+
+# No difference in MCV between AML and AMH (p = 0.456) 
+# No difference in MCV between AML and HAR (p = 0.855) 
+# No difference in MCV between AMH and AMH (p = 0.592) 
+
+## -----
+
+# MCH
+aov.mch <- aov(mch ~ population, data=bloodsub.mod); summary(aov.mch)
+Anova(aov.mch, type=3)
+round(AIC(aov.mch), 3) 
+lm_diag_plots(aov.mch)
+
+#Test ANOVA assumptions (for both, <0.05 = violates assumptions; >0.05 "not sig" = normal/does not violate assumptions)
+# Formal test for normality w/ Anderson-Darling test
+ad.test(aov.mch$residuals) # normal
+# Formal test for equal variances w/ Levene's test (normality not assumed)
+leveneTest(mch ~ population, data=bloodsub.mod) # Variances equal 
+
+lsmeans(aov.mch, list(pairwise ~ population           ), adjust = "tukey")
+# $`lsmeans of population`
+#  population lsmean   SE df lower.CL upper.CL
+#  AML          31.8 1.95 56     27.9     35.7
+#  AMH          41.2 3.38 56     34.5     48.0
+#  HAR          34.0 1.03 56     31.9     36.1
+# 
+# $`pairwise differences of population`
+#  1         estimate   SE df t.ratio p.value
+#  AML - AMH    -9.41 3.90 56  -2.409  0.0498
+#  AML - HAR    -2.17 2.21 56  -0.981  0.5916
+#  AMH - HAR     7.24 3.53 56   2.048  0.1102
+
+# AMH has significantly higher MCH than AML (p = 0.049) * 
+# No difference in MCH between AML and HAR (p = 0.591) 
+# No difference in MCH between AMH and HAR (p = 0.11)
+
+## -----
+
+# MCHC
+aov.mchc <- aov(mchc ~ population, data=bloodsub.mod); summary(aov.mchc)
+Anova(aov.mchc, type=3)
+round(AIC(aov.mchc), 3) 
+lm_diag_plots(aov.mchc)
+# There no difference in MCH between EML and EMH (p = 0.33)
+
+#Test ANOVA assumptions (for both, <0.05 = violates assumptions; >0.05 "not sig" = normal/does not violate assumptions)
+# Formal test for normality w/ Anderson-Darling test
+ad.test(aov.mchc$residuals) # not normal
+# Formal test for equal variances w/ Levene's test (normality not assumed)
+leveneTest(mchc ~ population, data=bloodsub.mod) # Variances equal 
+
+# Because lack of normality violates ANOVA assumptions, we thus need to use Kruskal-Wallis.
+kw.mchc <- kruskal.test(mchc ~ population, data=bloodsub.mod); kw.mchc
+#Kruskal-Wallis chi-squared = 4.5587, df = 2, p-value = 0.1023
+
+
+# Conduct Dunn's Test of multiple comparisons (basically nonparametric equivalent of lsmeans/Tukey's post-hoc)
+# Performs Dunn's (1964) test of multiple comparisons following a significant Kruskal-Wallis test, 
+# possibly with a correction to control the experimentwise error rate.
+dunnTest(mchc ~ population, data=bloodsub.mod, kw=TRUE)
+#   Comparison          Z    P.unadj      P.adj
+# 1  AMH - AML  1.3018543 0.19296620 0.38593241
+# 2  AMH - HAR -0.4773925 0.63308267 0.63308267
+# 3  AML - HAR -2.1338953 0.03285135 0.09855405
+
+ # population mean trait value
+ # AML          32.4 
+ # AMH          33.0 
+ # HAR          33.3 
+
+# No difference in MCHC between AML and AMH (p = 0.386) 
+# No difference in MCHC between AMH and HAR (p = 0.633) 
+# No difference in MCHC between AML and HAR (p = 0.099)
+```
+
+
+# PLOT AML, AMH, HAR 3-GROUP BOX PLOTS: 6-PANEL BOX PLOT FIG    
+Box plot figure for paper
+```{R}
+# Box plot of Hb
+(box.hb <- ggplot(subset(bloodsub.mod, population %in% c("AML", "AMH", "HAR")), aes(x=population, y=hb)) +
+       # facet_wrap(~sex, nrow=2) + 
+        geom_quasirandom(aes(color=population)) + # use width=0.2 to make this narrower
+        scale_color_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + 
+        geom_boxplot(aes(fill = factor(population)), outlier.size=0.8, alpha=0.7) +
+        scale_x_discrete(labels = c("Southern\n(low)","Southern\n(high)","Northern")) + 
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("AML", "AMH"), # List pairwise comparisons in the order you want sig to appear
+                                    #   c("AMH", "HAR"),
+                                       c("AML", "HAR")),
+                    y_position=c(24, 26), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.02) +
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + # southern low=brown; EM=purple; northern=turquoise 
+        labs(y="[Hb] (g/dl)", # Hella confusing formatting for x and y axis labels 
+             x="") +
+        ggtitle("D") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+      #  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # Keep if you want labels angled; else don't keep
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=10), axis.title=element_text(size=12))
+)
+ggsave(box.hb, filename="BoxPlot_Blood_LowHigh_vs_Hb_2023_11-16.pdf", height=7, width=9, units="in")
+# High birds have significantly higher Hb than low birds
+
+# Box plot of Hct
+(box.hct <- ggplot(subset(bloodsub.mod, population %in% c("AML", "AMH", "HAR")), aes(x=population, y=hct)) +
+       # facet_wrap(~sex, nrow=2) + 
+      geom_quasirandom(aes(color=population)) + 
+        scale_color_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + 
+        geom_boxplot(aes(fill = factor(population)), outlier.size=0.8, alpha=0.7) +
+        scale_x_discrete(labels = c("Southern\n(low)","Southern\n(high)","Northern")) + 
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("AML", "AMH"), # List pairwise comparisons in the order you want sig to appear
+                                       c("AMH", "HAR"),
+                                       c("AML", "HAR")),
+                    y_position=c(0.655,0.675,0.695), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.02) +
+       # stat_summary(fun=mean, colour="black", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + # southern low=brown; EM=purple; northern=turquoise
+        labs(y="Hct (%)", # Hella confusing formatting for x and y axis labels 
+             x="") +
+        ggtitle("E") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+      #  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # Keep if you want labels angled; else don't keep
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=10), axis.title=element_text(size=12))
+)
+ggsave(box.hct, filename="BoxPlot_Blood_LowHigh_vs_Hct_2023_11-16.pdf", height=7, width=9, units="in")
+# High birds have significantly higher Hct than low birds
+
+# Box plot of TRBC
+(box.trbc <- ggplot(subset(bloodsub.mod, population %in% c("AML", "AMH", "HAR")), aes(x=population, y=trbc)) +
+       # facet_wrap(~sex, nrow=2) + 
+        geom_quasirandom(aes(color=population)) + 
+        scale_color_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + 
+        geom_boxplot(aes(fill = factor(population)), outlier.size=0.8, alpha=0.7) +
+        scale_x_discrete(labels = c("Southern\n(low)","Southern\n(high)","Northern")) + 
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        # No significant comparisons so shading this whole part out
+        # geom_signif(comparisons = list(c("AML", "AMH"), # List pairwise comparisons in the order you want sig to appear
+        #                                c("AMH", "HAR"),
+        #                                c("AML", "HAR")),
+        #             y_position=c(0.65,0.67, 0.69), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+        #             map_signif_level=TRUE, tip_length=0.02) +    
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + # southern low=brown; EM=purple; northern=turquoise
+        labs(y=expression(TRBC~"("~RBC~x~10^{6}~"/"~mm^{3}~")"), # Hella confusing formatting for x and y axis labels 
+             x="") +
+        ggtitle("F") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+      #  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # Keep if you want labels angled; else don't keep
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=10), axis.title=element_text(size=12))
+)
+ggsave(box.trbc, filename="BoxPlot_Blood_LowHigh_vs_TRBC_2023_11-16.pdf", height=7, width=9, units="in")
+# High birds have significantly higher Hct than low birds
+
+# Box plot of MCV
+(box.mcv <- ggplot(subset(bloodsub.mod, population %in% c("AML", "AMH", "HAR")), aes(x=population, y=mcv)) +
+       # facet_wrap(~sex, nrow=2) + 
+        geom_quasirandom(aes(color=population)) + 
+        scale_color_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + 
+        geom_boxplot(aes(fill = factor(population)), outlier.size=0.8, alpha=0.7) +
+        scale_x_discrete(labels = c("Southern\n(low)","Southern\n(high)","Northern")) + 
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        # No significant comparisons so shading this whole part out
+        # geom_signif(comparisons = list(c("AML", "AMH"), # List pairwise comparisons in the order you want sig to appear
+        #                                c("AMH", "HAR"),
+        #                                c("AML", "HAR")),
+        #             y_position=c(0.65,0.67, 0.69), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+        #             map_signif_level=TRUE, tip_length=0.02) +   
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + # southern low=brown; EM=purple; northern=turquoise
+        labs(y="MCV (fl)", # Hella confusing formatting for x and y axis labels 
+             x="Population") +
+        ggtitle("G") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+      #  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # Keep if you want labels angled; else don't keep
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=10), axis.title=element_text(size=12))
+)
+ggsave(box.mcv, filename="BoxPlot_Blood_LowHigh_vs_MCV_2023_11-16.pdf", height=7, width=9, units="in")
+
+# Box plot of MCH
+(box.mch <- ggplot(subset(bloodsub.mod, population %in% c("AML", "AMH", "HAR")), aes(x=population, y=mch)) +
+       # facet_wrap(~sex, nrow=2) + 
+        geom_quasirandom(aes(color=population)) + 
+        scale_color_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + 
+        geom_boxplot(aes(fill = factor(population)), outlier.size=0.8, alpha=0.7) +
+        scale_x_discrete(labels = c("Southern\n(low)","Southern\n(high)","Northern")) + 
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        geom_signif(comparisons = list(c("AML", "AMH")), # List pairwise comparisons in the order you want sig to appear
+                                     #  c("AMH", "HAR"),
+                                     #  c("AML", "HAR")),
+                    y_position=c(50), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+                    map_signif_level=TRUE, tip_length=0.02) +
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + # southern low=brown; EM=purple; northern=turquoise
+        labs(y="MCH (pg)", # Hella confusing formatting for x and y axis labels 
+             x="Population") +
+        ggtitle("H") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+      #  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # Keep if you want labels angled; else don't keep
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=10), axis.title=element_text(size=12))
+)
+ggsave(box.mch, filename="BoxPlot_Blood_LowHigh_vs_MCH_2023_11-16.pdf", height=7, width=9, units="in")
+
+# Box plot of MCHC
+(box.mchc <- ggplot(subset(bloodsub.mod, population %in% c("AML", "AMH", "HAR")), aes(x=population, y=mchc)) +
+       # facet_wrap(~sex, nrow=2) + 
+        geom_quasirandom(aes(color=population)) + 
+        scale_color_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + 
+        geom_boxplot(aes(fill = factor(population)), outlier.size=0.8, alpha=0.7) +
+        scale_x_discrete(labels = c("Southern\n(low)","Southern\n(high)","Northern")) + 
+        #geom_jitter(position = position_jitter(width = 0.01), alpha = 0.5, size = 2.0) +
+        # No significant comparisons so shading this whole part out
+        # geom_signif(comparisons = list(c("AML", "AMH"), # List pairwise comparisons in the order you want sig to appear
+        #                                c("AMH", "HAR"),
+        #                                c("AML", "HAR")),
+        #             y_position=c(0.65,0.67, 0.69), # ypos=c(height of 1st annotation, height of 2nd annotation, 3rd, etc)
+        #             map_signif_level=TRUE, tip_length=0.02) +
+        #stat_summary(fun=mean, colour="firebrick1", geom="point", shape=18, size=3.5) + # Red diamonds at mean 
+        theme_classic() +   # theme_classic() removes all gridlines; theme_bw() retains subtle nice gridlines           
+        theme(panel.grid.minor = element_blank()) +
+        scale_fill_manual(values = c("#8B795E", "#EA972A", "#00C5CD")) + # southern low=brown; EM=purple; northern=turquoise
+        labs(y="MCHC (g/dl)", # Hella confusing formatting for x and y axis labels 
+             x="Population") +
+        ggtitle("I") + # Assign panel number/header
+        theme(plot.title.position = "plot", # parameter "plot" specifies that you want "title" flush with y-axis
+          plot.title = element_text(face="bold")) + # This makes panel header bold 
+        # This is good for labeling figure panels! Avoids having to manually toy w/ hjust and vjust
+        theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm")) +  # top, right, bottom, left    
+      #  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # Keep if you want labels angled; else don't keep
+        theme(legend.position = "none") +
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=10), axis.title=element_text(size=12))
+)
+ggsave(box.mchc, filename="BoxPlot_Blood_LowHigh_vs_MCHC_2023_11-16.pdf", height=7, width=9, units="in")
+# High birds have significantly higher Hct than low birds
+
+#####
+
+# COMBINE ALL PLOTS TO MAKE 6-PANEL FIGURE: 
+# library(patchwork)
+# BloodFig_LowHigh_Boxplots <- (box.hb + box.hct + box.trbc + box.mcv + box.mch + box.mchc + plot_layout(guides = "collect"))
+# print(BloodFig_LowHigh_Boxplots)
+# ggsave(BloodFig_LowHigh_Boxplots, filename = "Patagona_Blood6-PanelBoxplot_Quasirandom_AML-AMH-HAR_2023_11-16.pdf", bg="transparent", height=8, width=11, units="in")
+
+# COMBINE ALL PLOTS TO MAKE 6-PANEL FIGURE: 
+library(patchwork)
+BloodFig_LowHigh_Boxplots_WithStandInPanels <- (box.hb + box.hb + box.lung2 + box.hb + box.hct + box.trbc + box.mcv + box.mch + box.mchc + plot_layout(guides = "collect"))
+print(BloodFig_LowHigh_Boxplots_WithStandInPanels)
+ggsave(BloodFig_LowHigh_Boxplots_WithStandInPanels, filename = "Patagona_Blood7-PanelBoxplot_Quasirandom_AML-AMH-HAR_DeleteStandInPlots_2023_11-16.pdf", bg="transparent", height=11.3, width=11.3, units="in")
+
+# Open this file in Illustrator, add in Hb genotype diagram, and note that lung plot is made in morpho analysis script.
+```
+
+
+---
+
+
+# Print environment for reproducibility
+```{r}
+sessionInfo() # List of packages and versions in use 
+```
+
+###########
+
+## END 
+
