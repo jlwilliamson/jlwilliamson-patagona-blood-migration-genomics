@@ -1,0 +1,377 @@
+---
+title: "patagona_sNMF"
+author: "Jessie Williamson"
+date: "1/25/2022; last revised 2024-04-15"
+output: html_document
+---
+
+sNMF pop structure analysis in Williamson et al. 2024, giant hummingbirds, *PNAS*. 
+
+
+# POPULATION STRUCTURE AND ASSIGNMENT: sNMF
+Script contains code and analyses for importing whole genome data and running sNMF analysis to analyze admixture and structure of populations of Giant Hummingbirds. 
+
+Use snmf in lea package to infer best fit # populations (k) and construct assignment plots with admixture coefficients
+**Info on sNMF**: http://membres-timc.imag.fr/Olivier.Francois/snmf/index.htm
+**sNMF Tutorial**: http://membres-timc.imag.fr/Olivier.Francois/LEA/files/LEA_github.pdf
+
+Note that we only present whole genome data in our paper.
+
+**Note on prepping data for import**: In order to run this script/do this analysis, you need a .vcf file output of SNPS (in our case, the output of a vcftools run.) 
+
+
+# Clear workspace and set WD
+```{R}
+rm(list=ls(all=TRUE)) # clear workspace 
+setwd("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics")
+```
+
+
+# Load packages
+```{r}
+library(adegenet)
+library(ade4)
+library(vcfR)
+library(scales)
+library(parallel)
+library(dplyr)
+library(tibble)
+library(purrr)
+library(viridis)
+
+library(tidyverse)
+library(data.table)
+library(grid)
+library(gridExtra)
+
+## I got an error saying LEA isn't compatible w/ version 4.2.2 of R; seems it's just not updated on CRAN
+## Reinstall LEAfrom source 
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("LEA")
+
+library(LEA)
+# Note that I get an error saying 'struct2geno' is masked by global environment
+```
+
+---
+
+# Load sNMF functions
+```{r}
+# Load required Frichot sNMF functions from source: 
+source("http://membres-timc.imag.fr/Olivier.Francois/Conversion.R") # for struct2geno()
+source("http://membres-timc.imag.fr/Olivier.Francois/POPSutilities.R")
+# NOTE!!! These need to be here! If above with install.packages, when you clear console you'll wipe required functions. 
+
+# Run plotting function used to plot sNMF output.
+# Input is sNMF object, the k value, and optionally an array of colors (has default of 10).
+plot_sNMF <- function(input, k_val, colors=turbo(k_val, begin=.30, end=.94)){ # .2 and .8 are beginning of magma ramp
+  # picks best run best on cross entropy
+  best_run <- which.min(cross.entropy(input, K = k_val))
+  # makes q matrix of ancestry coeffs
+  q_matrix <- Q(input, K = k_val, run = best_run)
+  # plots the output, space makes blank between indivs
+  barplot(t(q_matrix), col = colors, border = NA, space = 0.25, xlab = "Individuals", ylab = "Admixture coefficients", horiz=FALSE)
+}
+# magma 0.1 to 0.8 (or 0.9) is easily distinguishable  (I had magma 0.2-0.9 too)
+# turbo is the best ramp for electric contrasting colors, though they sometimes hurt the eyes (0.30 to 0.94 good tho)
+
+# colortest
+# par(mfrow=c(3,1), mar=c(1,2,1,0), oma=c(1,2,1,0))
+# #plot_sNMF(test.snmf, 1) # k=1
+# plot_sNMF(test.snmf, 2) # k=2
+# plot_sNMF(test.snmf, 3) # k=3
+# plot_sNMF(test.snmf, 4) # k=4
+```
+
+
+# Load in data AND convert data from .vcf to .geno to run sNMF
+Only need to do this once! Once you have .geno files, just proceed with sNMF analysis. 
+```{r}
+# A COUPLE NOTES, because this relates to previous confusion about why sNMF was complicated.
+# With EFG's old way of .012 files and weird wrangling with .sh scripts, I thought this was super duper complicated (it was)
+# The way I've outlined below is quite simple and allows for wrangling of individual orders in R, which I like more. 
+
+# NOTES ON FUNCTIONS TO CONVERT TO .GENO FILES
+# This is super fast with vcf2geno()! Takes a split second.
+# BUT: Note that vcf2geno() is very finnicky! It won't throw error messages, but WILL abort your R session without warning
+# if the slightest thing is off - very unhelpful! This has been mentioned before and maybe using terminal would help:
+# https://stackoverflow.com/questions/61021165/r-session-aborts-when-using-vcf2geno-code
+
+# I originally used struct2geno() function and this was SUPER funky. For some reason it was only reading half our markers, 
+# which randomly meant that sometimes we'd end up with 0.5 marker and therefore an error about matrix dimensions. 
+# It also took 1+ hours to run, which was clunky and required converting .vcf to .str to .geno, which was also clunky. 
+
+# NOTES ABOUT GENO FILES
+# A.geno file is in "long" format and each column corresponds to one individual
+# Big downside is that columns are NOT labeled, so you need to ID individuals by referencing row orders in the vcf file that you convert to geno
+# (literally open the vcf, view row orders, and use this to manually add column names, as described below)
+
+
+## READING IN NEW DATA ON 4/4/23
+vcf2geno("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04.vcf", output="/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/geno_files_for_snmf/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04.geno", force=TRUE)
+
+# I get this error: 
+# 	- number of detected individuals:	35
+# 	- number of detected loci:		100179
+# 
+# For SNP info, please check /Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/geno_files_for_snmf/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04.vcfsnp.
+# 
+# 4 line(s) were removed because these are not SNPs.
+# Please, check /Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/geno_files_for_snmf/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04.removed file, for more informations.
+# 
+# [1] "/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/geno_files_for_snmf/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04.geno"
+
+# Error doesn't seem to have impacted making the geno file (and results are consistent w/ previous analysis), so proceeding. 
+
+
+##### 
+
+# OLDER NOTES RELATED TO CONVERTING FILES TO .GENO
+
+# DON'T USE VCF2GENO FOR NORTHERN, IT BREAKS EVERY TIME! 
+# As a workaround, use vcftools to output a .ped file, THEN convert ped2geno, e.g.:
+# ped2geno("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/patagona_northern_100complete_10kthin.ped", output="/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/patagona_northern_100complete_10kthin.geno", force=TRUE)
+# 98,378 loci detected; this checks out with number of sites that vcftools kept
+# For whatever absurd reason (frustrating!) I had to use vcftools to write .vcf to .ped, then convert .ped to .geno
+
+# OLD CODE FOR CONVERTING .STR TO .GENO
+# convert .str file to a .geno file, with first column being sample name and second being population number
+# If no population column (they aren't really used anyways), set extra.col to 0
+# struct2geno(file = "/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/patagona_alldata_100complete_10kthin.str", 
+#             TESS = FALSE, diploid = TRUE, FORMAT = 1,
+#             extra.row = 0, extra.col = 1, output = "/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/patagona_alldata_100complete_10kthin.geno")
+# The genotypic matrix has 36 individuals and 50371 markers. 
+# ^^ part of the issue; only half of sites being loaded (we have >100,000 SNPs)
+```
+
+
+
+
+# Order .geno file to correspond to groups and N to S latitude
+ONLY DO THIS ONCE! 
+
+I've done this and my final .geno order is set, so can skip this code chunk and pick up directly with running sNMF in the next code chunk below. 
+Overview of this process: Read in .geno files made above, manually add row names with identifiers of each bird, write out .geno file, which must be read into sNMF as a character string (not R object), test run of sNMF...revise as necessary. 
+
+NOTE that snmf automatically "reads in" the file whn it runs, so no need to read it in separately (this is built into the function). 
+*IMPORTANT! In a .geno file, each individual is represented in a single column BUT, when R reads in a .geno file, individuals are listed in rows, NOT columns. So, use rownames() to reorder, not colnames(). 
+```{r}
+# Read in .geno file 
+alldatageno <- read.geno("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/geno_files_for_snmf/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04.geno")
+
+# Assign row names based on order in each relevant .vcf file 
+# Remember: .geno files are read into R w/ individuals as ROWS, not columns, so use rownames()! 
+rownames(alldatageno) <- c("Pgigas_central_168263","Pgigas_central_168516","Pgigas_central_CUMV-52570","Pgigas_central_KU-96885","Pgigas_central_USNM-645339","Pgigas_central_USNM-645376","Pgigas_central_USNM-645459","Pgigas_central_USNM-645470","Pgigas_central_USNM-645523","Pgigas_central_USNM-645666","Pgigas_central_UWBM-92340","Pgigas_central_UWBM-92341","Pgigas_northern_159729","Pgigas_northern_159890","Pgigas_northern_162971","Pgigas_northern_163100","Pgigas_northern_168299","Pgigas_northern_168512","Pgigas_northern_171597","Pgigas_northern_171609","Pgigas_northern_173855","Pgigas_northern_B6303","Pgigas_northern_B7903","Pgigas_northern_B7904","Pgigas_southern_252134","Pgigas_southern_252148","Pgigas_southern_279017","Pgigas_southern_279040","Pgigas_southern_279103","Pgigas_southern_279105","Pgigas_southern_279111","Pgigas_southern_279112","Pgigas_southern_279121","Pgigas_southern_279140","Pgigas_southern_279172") 
+
+## ---------
+
+# Reorder rownames (columns representing individuals)
+# You initially did this by calling row number, but that is extremely inefficient (and makes it too easy to mix up individuals)
+# Use column names; make sure individuals are grouped appropriately and in order.
+
+# What we want: Northern (North to South latitude), Southern (North to South latitude)
+# Then, within this, if individuals are from the same locality and have mixed ancestry, you can move them around to tweak aesthetics
+# Just don't do too much shuffling; remember we want samples grouped by rough locality/department of origin for our sNMF plot. 
+
+alldatageno.reorder <- alldatageno[c("Pgigas_northern_B6303", # Ecuador 
+                                     "Pgigas_northern_B7904",
+                                     "Pgigas_northern_B7903",
+                                     "Pgigas_northern_173855", # Peru
+                                     "Pgigas_northern_171609",
+                                     "Pgigas_northern_163100",
+                                     "Pgigas_northern_162971",
+                                     "Pgigas_northern_168512",
+                                     "Pgigas_central_168516",
+                                     "Pgigas_central_168263",
+                                     "Pgigas_northern_168299",
+                                     "Pgigas_northern_159890",
+                                     "Pgigas_northern_159729",
+                                     
+                                     "Pgigas_northern_171597",  # Peru sample origin but Argentinian ancestry
+                                     "Pgigas_central_CUMV-52570", # Argentina ancestry and origin
+                                     "Pgigas_central_KU-96885",
+                                     "Pgigas_central_USNM-645376",
+                                     "Pgigas_central_UWBM-92341",
+                                     "Pgigas_central_UWBM-92340",
+                                     "Pgigas_central_USNM-645470",
+                                     "Pgigas_central_USNM-645339",
+                                     "Pgigas_central_USNM-645459",
+                                     "Pgigas_central_USNM-645523",
+                                     "Pgigas_central_USNM-645666",
+                                     
+                                     "Pgigas_southern_279172", # Chile origin 
+                                     "Pgigas_southern_279103",
+                                     "Pgigas_southern_252148",
+                                     "Pgigas_southern_252134",
+                                     "Pgigas_southern_279017",
+                                     "Pgigas_southern_279040",
+                                     "Pgigas_southern_279105",
+                                     "Pgigas_southern_279111",
+                                     "Pgigas_southern_279112",
+                                     "Pgigas_southern_279121",
+                                     "Pgigas_southern_279140"
+                                      ), ]                                   
+  
+# This order part is somewhat of an iterative process. 
+# Read out file you want, then read it in and run test sNMF. If order needs tweaking, tweak, write out, read in, run sample, etc. 
+
+# sNMF runs by reading IN a .geno file, so let's write out this reordered file to be able to run the analysis:
+# write.geno(alldatageno.reorder, "/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/geno_files_for_snmf/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04_reorder.geno")
+
+# ------
+
+# Quick test run during editing process to check order (with only 2 repetitions so this will be super fast:
+test.snmf <- snmf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/geno_files_for_snmf/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04_reorder.geno", ploidy=2, K=1:4, alpha=10, project="new", entropy=TRUE, repetitions=2)
+
+# Test sNMF plots 
+par(mfrow=c(3,1), mar=c(1,2,1,0), oma=c(1,2,1,0))
+plot_sNMF(test.snmf, 2) # k=2
+plot_sNMF(test.snmf, 3) # k=3
+plot_sNMF(test.snmf, 4) # k=4
+```
+
+
+
+# Run sNMF and assess diagnostics
+```{r}
+# Run sNMF for all values of K (K=1:4 in my case) and 10 repetitions. The entropy = T is how you estimate best K.
+# project="new" will rewrite over runs each time
+# repetitions= # iterations per k value. EFG likes 100 for papers but anecdotally sees no difference between 10 and 100.
+# Note that alpha is the "cost" of introducing admixture, and higher values = less admixture
+# We want k=1:4 because we know Ecuador is differentiated 
+# We will run sNMF with alpha values of 1, 10, and 100 and assess differences before deciding on an optimal value. 
+    # In our case, I don't find much difference between alpha 1, 10, and 100 
+# Per Frichot et al. 2014, impact of alpha can be greater for smaller datasets 
+# Takes a few mins to run repetitions=10 and more like 20-40 mins to run repetitions=100
+
+## RUN SNMF WITH 10 REPS
+# ALL GENOME DATA (35 birds, excludes NK279003) - 10 reps
+patagona_snmf_10reps.a1 <- snmf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/geno_files_for_snmf/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04_reorder.geno", ploidy=2, K=1:4, alpha=1, project="new", entropy=TRUE, repetitions=10)
+save(patagona_snmf_10reps.a1, file="patagona_snmf_10reps.a1.RData")
+#load("patagona_snmf.a1.RData")
+
+patagona_snmf_10reps.a10 <- snmf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/geno_files_for_snmf/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04_reorder.geno", ploidy=2, K=1:4, alpha=10, project="new", entropy=TRUE, repetitions=10)
+save(patagona_snmf_10reps.a10, file="patagona_snmf_10reps.a10.RData")
+#load("patagona_snmf.a10.RData")
+
+patagona_snmf_10reps.a100 <- snmf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/geno_files_for_snmf/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04_reorder.geno", ploidy=2, K=1:4, alpha=100, project="new", entropy=TRUE, repetitions=10)
+save(patagona_snmf_10reps.a100, file="patagona_snmf_10reps.a100.RData")
+#load("patagona_snmf.a100.RData")
+
+# ------
+
+## RUN SNMF WITH 100 REPS
+# ALL GENOME DATA (35 birds, excludes NK279003) - 100 reps
+patagona_snmf_100reps.a1 <- snmf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/geno_files_for_snmf/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04_reorder.geno", ploidy=2, K=1:4, alpha=1, project="new", entropy=TRUE, repetitions=10)
+save(patagona_snmf_100reps.a1, file="patagona_snmf_100reps.a1.RData")
+#load("patagona_snmf.a1.RData")
+
+patagona_snmf_100reps.a10 <- snmf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/geno_files_for_snmf/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04_reorder.geno", ploidy=2, K=1:4, alpha=10, project="new", entropy=TRUE, repetitions=10)
+save(patagona_snmf_100reps.a10, file="patagona_snmf_100reps.a10.RData")
+#load("patagona_snmf.a10.RData")
+
+patagona_snmf_100reps.a100 <- snmf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/geno_files_for_snmf/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04_reorder.geno", ploidy=2, K=1:4, alpha=100, project="new", entropy=TRUE, repetitions=10)
+save(patagona_snmf_100reps.a100, file="patagona_snmf_100reps.a100.RData")
+#load("patagona_snmf.a100.RData")
+
+# ----
+
+# ASSESS VALUES OF K AND ALPHA
+# Plot cross-entropy criteria of all models
+# Lowest point along y-axis = best fit K
+
+# Diagnostics for 10 reps 
+pdf(file="snmf_alpha-and-k-diagnostics_GenomeData_10_reps_2023-04-04.pdf", width=6, height=10) 
+par(mfrow=c(9,1), mar=c(2,2,2,2), oma=c(1,2,1,0))
+plot(patagona_snmf_10reps.a1, col = "blue", pch = 1, type = "o", main="Genome Data (35 individuals, a=1)") # k=2 best
+plot(patagona_snmf_10reps.a10, col = "red", pch = 1, type = "o", main="Genome Data (35 individuals, a=10)")
+plot(patagona_snmf_10reps.a100, col = "green", pch = 1, type = "o", main="Genome Data (35 individuals, a=100)")
+dev.off()
+
+# Diagnostics for 100 reps 
+pdf(file="snmf_alpha-and-k-diagnostics_GenomeData_100reps_2023-04-04.pdf", width=6, height=10) 
+par(mfrow=c(9,1), mar=c(2,2,2,2), oma=c(1,2,1,0))
+plot(patagona_snmf_100reps.a1, col = "blue", pch = 1, type = "o", main="Genome Data (35 individuals, a=1)") # k=2 best
+plot(patagona_snmf_100reps.a10, col = "red", pch = 1, type = "o", main="Genome Data (35 individuals, a=10)")
+plot(patagona_snmf_100reps.a100, col = "green", pch = 1, type = "o", main="Genome Data (35 individuals, a=100)")
+dev.off()
+```
+
+
+
+# Print sNMF "structure" plots (THESE WILL BE USED FOR PAPER, FIGURE 2D!)
+File used in paper (see below): 100 reps, alpha = 100 - called "snmf_GenomeData_k1-4_a100_100reps_2023-04-04_final.pdf"
+```{r}
+# PRINT PLOTS FOR 10 REPS
+# ALL BIRDS: alpha=1 
+par(mfrow=c(3,1), mar=c(1,2,1,0), oma=c(1,2,1,0))
+#plot_sNMF(patagona_snmf.a1, 1) # k=1
+plot_sNMF(patagona_snmf_10reps.a1, 2) # k=2
+plot_sNMF(patagona_snmf_10reps.a1, 3) # k=3
+plot_sNMF(patagona_snmf_10reps.a1, 4) # k=4
+
+# ALL BIRDS: alpha=10 
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/snmf_GenomeData_k1-4_a10_10reps_2023-04-04.final.pdf", width=6, height=5)
+par(mfrow=c(3,1), mar=c(1,2,1,0), oma=c(1,2,1,0))
+#plot_sNMF(patagona_snmf.a10, 1) # k=1
+plot_sNMF(patagona_snmf_10reps.a10, 2) # k=2
+plot_sNMF(patagona_snmf_10reps.a10, 3) # k=3
+plot_sNMF(patagona_snmf_10reps.a10, 4) # k=4
+dev.off()
+
+# ALL BIRDS: alpha=100 
+par(mfrow=c(3,1), mar=c(1,2,1,0), oma=c(1,2,1,0))
+#plot_sNMF(patagona_snmf.a100, 1) # k=1
+plot_sNMF(patagona_snmf_10reps.a100, 2) # k=2
+plot_sNMF(patagona_snmf_10reps.a100, 3) # k=3
+plot_sNMF(patagona_snmf_10reps.a100, 4) # k=4
+
+# -----
+
+# PRINT PLOTS FOR 10 REPS
+
+# COUPLE IMPORTANT NOTES:
+# Use 100 reps for paper
+# Since there's no difference in any alpha values tested, let's go with alpha=100.
+
+# ALL BIRDS: alpha=1 
+par(mfrow=c(3,1), mar=c(1,2,1,0), oma=c(1,2,1,0))
+#plot_sNMF(patagona_snmf.a1, 1) # k=1
+plot_sNMF(patagona_snmf_100reps.a1, 2) # k=2
+plot_sNMF(patagona_snmf_100reps.a1, 3) # k=3
+plot_sNMF(patagona_snmf_100reps.a1, 4) # k=4
+
+# ALL BIRDS: alpha=10 
+par(mfrow=c(3,1), mar=c(1,2,1,0), oma=c(1,2,1,0))
+#plot_sNMF(patagona_snmf.a10, 1) # k=1
+plot_sNMF(patagona_snmf_100reps.a10, 2) # k=2
+plot_sNMF(patagona_snmf_100reps.a10, 3) # k=3
+plot_sNMF(patagona_snmf_100reps.a10, 4) # k=4
+
+# ALL BIRDS: alpha=100 
+# *********THESE ARE THE PLOTS I USED IN FIGURE 2 PANEL OF PAPER
+pdf("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/snmf_GenomeData_k1-4_a100_100reps_2023-04-04_final.pdf", width=6, height=5)
+par(mfrow=c(3,1), mar=c(1,2,1,0), oma=c(1,2,1,0))
+#plot_sNMF(patagona_snmf.a100, 1) # k=1
+plot_sNMF(patagona_snmf_100reps.a100, 2) # k=2
+plot_sNMF(patagona_snmf_100reps.a100, 3) # k=3
+plot_sNMF(patagona_snmf_100reps.a100, 4) # k=4
+dev.off()
+```
+
+Then read these plots into Illustrator, tweak aesthetics and add appropriate labels, and insert as a panel into Figure 2. 
+
+
+---
+
+
+# Print environment for reproducibility
+```{r}
+sessionInfo() # List of packages and versions in use 
+```
+
+###########
+
+## END 
