@@ -1,0 +1,1084 @@
+---
+title: "Patagona migration analysis"
+author: "Jessie Williamson"
+date: "Created 1/3/2022; last revised 2024-04-15"
+output: html_document
+---
+
+Analyses of migration data created in 'geo_analysis_FLightR_git.Rmd', in Williamson et al. 2024, giant hummingbirds, *PNAS*. Output from geolocator migration tracks are processed and analyzed here. 
+
+# setwd()
+```{R}
+rm(list=ls(all=TRUE)) # clear workspace 
+setwd("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona") 
+```
+
+---
+
+# Load packages
+```{r}
+# Geolocator analysis and general packages
+library(devtools) # load devtools
+library(SGAT) 
+library(FLightR) # Version 0.5.1
+library(TwGeos)
+library(ggplot2)
+library(job)
+
+# Mapping packages
+library(maptools)
+library(mapdata)
+library(maps)
+library(grid)
+library(raster)
+library(viridis)
+library(RColorBrewer)
+library(tidyverse)
+library(prettymapr)
+library(rgbif) # elevation() function for obtaining elevations from migration tracks
+library(ggsignif)
+library(lubridate)
+
+# general
+library(dplyr)
+library(ggplot2)
+library(rgbif)
+
+# Need to install ggmap from Github because it's outdated on CRAN (hence the error message Re: v. 2.7); boot from here: 
+# if(!requireNamespace("devtools")) install.packages("devtools")
+# devtools::install_github("dkahle/ggmap", ref = "tidyup", force=TRUE) # force=TRUE forces installation
+library(ggmap)
+
+#devtools::install_github("SWotherspoon/SGAT") # Install from source first because TwGeos has SGAT dependencies
+#devtools::install_github("SLisovski/TwGeos") # On 12/29/23 I couldn't install from CRAN bc of version issues so used Git version
+```
+
+SGAT source code on GitHub: https://github.com/SWotherspoon/SGAT 
+TwGeos: https://github.com/slisovski/TwGeos
+
+
+# Load data 
+All geolocator tracks were created in geo_analysis_FLightR.Rmd using the geolocator analysis program, FLightR, following standard vignette. All modifications from vignette are noted in the FLightR script. 
+```{r}
+# Load model results
+load("geolocator-analysis/Result.BJ085.final.model.RData") 
+load("geolocator-analysis/Result.BJ090.final.model.RData")
+load("geolocator-analysis/Result.BJ091.final.model.RData") 
+load("geolocator-analysis/Result.BJ104.final.model.RData") 
+load("geolocator-analysis/Result.BJ105.final.model.RData") 
+load("geolocator-analysis/Result.BJ112.final.model.RData") 
+load("geolocator-analysis/Result.BC377.final.model.RData") 
+
+# Load summary outputs 
+load("geolocator-analysis/StatMigrSum.BJ085.final.RData") 
+load("geolocator-analysis/StatMigrSum.BJ090.final.RData") 
+load("geolocator-analysis/StatMigrSum.BJ091.final.RData")  
+load("geolocator-analysis/StatMigrSum.BJ104.final.RData") 
+load("geolocator-analysis/StatMigrSum.BJ105.final.RData") 
+load("geolocator-analysis/StatMigrSum.BJ112.final.RData") 
+load("geolocator-analysis/StatMigrSum.BC377.final.RData") 
+```
+
+
+-----
+
+# Get stationary periods, stopovers, and coordinates to map 
+**Main_stopovers:** data frame that contains all stopovers of 2 or more days. These data come from summary stats and are associated with standard deviations, and they have quartiles of arrival/departure times. 
+
+**BJ085.coords.all**: This is subset of Results$Quantiles I made w/ just median lat and lon, LCI and UCI for lats and lons, and raw timestamp estimates. So note that this dataframe contains hundreds (i.e. 745 points for BJ085) of points for each geo. 
+
+**BJ085.stationary**: This data frame takes JUST those data on potential stationary periods (from summary) from the Results$Quantiles data, so there are far fewer points (i.e. 56 obs for BJ085). Note that there are sometimes >1 observation per day, which isn't ideal, and lots of noise around equinox. 
+
+Note that "Coords2Plot" is taking median lats and lons of potential stationary periods and using these to generate points and then line segments that connect points. THIS is what generates the movement trajectory.
+
+# BJ085
+```{r fig.width=9, fig.height=9}
+# MAIN STOPOVERS
+# Detect stationary periods by creating 'stopover duration' (i.e., the difference between Departure.Q.50 & Arrival.Q.50)
+# this data frame will give you all stopovers of 2 or more days that exclude the breeding season 
+summary.BJ085.final$Stationary.periods$stopover_duration <- as.numeric(difftime(summary.BJ085.final$Stationary.periods$Departure.Q.50, summary.BJ085.final$Stationary.periods$Arrival.Q.50, units='days')) # stopover duration is in days
+
+# Select the stationary periods that were >=2 days
+BJ085.stopovers <- summary.BJ085.final$Stationary.periods[is.na(summary.BJ085.final$Stationary.periods$stopover_duration) | summary.BJ085.final$Stationary.periods$stopover_duration>=2,] 
+#BJ085.stopovers <- BJ085.stopovers[-which(is.na(BJ085.stopovers$stopover_duration)),] # delete breeding season
+# NOTE: Coded out because we WANT breeding season for elevation change plots
+
+# Main stopovers have standard deviation estimtes; coords below do NOT (these come from FlightR model vs summary)
+
+# ALL MOVEMENT ESTIMATES
+BJ085.coords.all <- subset(Result.BJ085.final$Results$Quantiles, 
+                           select = c(Medianlat,
+                                      Medianlon,
+                                      LCI.lat,
+                                      UCI.lat,
+                                      LCI.lon,
+                                      UCI.lon,
+                                      time # precise time stamp for each lat/lon estimate
+                                      ))
+
+# POTENTIAL STATIONARY PERIODS
+# Basically, take lat and lon and bind them together for each potential stationary period 
+# Potential stationary periods, their lats, lons, UCI and LCI, and 50% quartile arrival dates (proxies for abs time)
+BJ085.stationary <- subset(Result.BJ085.final$Results$Quantiles, 
+                           select = c(Medianlat,
+                                      Medianlon,
+                                      LCI.lat,
+                                      UCI.lat,
+                                      LCI.lon,
+                                      UCI.lon,
+                                      time # start with precise time stamp; THIS GETS CONVERTED BELOW
+                                      )) 
+
+for (i in 1:nrow(summary.BJ085.final$Potential_stat_periods)) {
+  BJ085.stationary[summary.BJ085.final$Potential_stat_periods[i,1]: # Median Lat
+    summary.BJ085.final$Potential_stat_periods[i,2],1] =  
+    summary.BJ085.final$Stationary.periods$Medianlat[i]
+  BJ085.stationary[summary.BJ085.final$Potential_stat_periods[i,1]: # Median Lon
+    summary.BJ085.final$Potential_stat_periods[i,2],2] =  
+    summary.BJ085.final$Stationary.periods$Medianlon[i]
+  BJ085.stationary[summary.BJ085.final$Potential_stat_periods[i,1]: # LCI lat
+    summary.BJ085.final$Potential_stat_periods[i,2],3] =
+    summary.BJ085.final$Stationary.periods$LCI.lat[i]
+  BJ085.stationary[summary.BJ085.final$Potential_stat_periods[i,1]: # UCI lat
+    summary.BJ085.final$Potential_stat_periods[i,2],4] =
+    summary.BJ085.final$Stationary.periods$UCI.lat[i]
+  BJ085.stationary[summary.BJ085.final$Potential_stat_periods[i,1]: # LCI lon
+    summary.BJ085.final$Potential_stat_periods[i,2],5] =
+    summary.BJ085.final$Stationary.periods$LCI.lon[i]
+  BJ085.stationary[summary.BJ085.final$Potential_stat_periods[i,1]: # UCI lon
+    summary.BJ085.final$Potential_stat_periods[i,2],6] =
+    summary.BJ085.final$Stationary.periods$UCI.lon[i]
+  BJ085.stationary[summary.BJ085.final$Potential_stat_periods[i,1]: # time 
+    summary.BJ085.final$Potential_stat_periods[i,2],7] =
+    summary.BJ085.final$Stationary.periods$Arrival.Q.50[i] # IMPORTANT! Here I specify 50% quartile arrival times
+  # I could easily specify higher quartile times (though some missing data) OR departure times
+}
+BJ085.stationary <- BJ085.stationary[!duplicated(BJ085.stationary),]
+
+# REMOVE EQUINOX ERROR POINTS
+# Equinox data are problematic and result in error-prone lat/lon estimates; and therefore, elev estimates
+# Let's remove data from the two-week equinox period, i.e., 1 week before and 1 week after equinox
+# March equinox is 03-20, so remove data from 03-13 to 03-27
+# September equinox is 09-22, so remove data from 09-15 to 09-29
+BJ085.stopovers <- BJ085.stopovers %>% filter(Arrival.Q.50 < as.POSIXct("2018-03-13") | Arrival.Q.50 > as.POSIXct("2018-03-27"))
+BJ085.stopovers <- BJ085.stopovers %>% filter(Arrival.Q.50 < as.POSIXct("2018-09-15") | Arrival.Q.50 > as.POSIXct("2018-09-29"))
+BJ085.stationary <- BJ085.stationary %>% filter(time < as.POSIXct("2018-03-13") | time > as.POSIXct("2018-03-27"))
+BJ085.stationary <- BJ085.stationary %>% filter(time < as.POSIXct("2018-09-15") | time > as.POSIXct("2018-09-29"))
+BJ085.coords.all <- BJ085.coords.all %>% filter(time < as.POSIXct("2018-03-13") | time > as.POSIXct("2018-03-27"))
+BJ085.coords.all <- BJ085.coords.all %>% filter(time < as.POSIXct("2018-09-15") | time > as.POSIXct("2018-09-29"))
+
+
+# OBTAIN ELEVATIONS
+# Process of obtaining elevations a little clunky because of required column names; do this iteratively
+# Rename columns - must be 'decimalLatitude' and 'decimalLongitude' for rgbif elevation() function to work 
+BJ085.coords.all <- BJ085.coords.all %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+BJ085.stationary <- BJ085.stationary %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+BJ085.stopovers <- BJ085.stopovers %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+# Consider reordering columns in BJ085.stopovers
+
+# Fetch elevations with elevation() from rgbif
+BJ085.coords.all <- elevation(BJ085.coords.all, elevation_model="srtm3", username="jwilliamson")
+BJ085.stationary <- elevation(BJ085.stationary, elevation_model="srtm3", username="jwilliamson")
+BJ085.stopovers <- elevation(BJ085.stopovers, elevation_model="srtm3", username="jwilliamson")
+
+# Convert 'no data' ocean points (values of -32678) to zero
+# Estimates aren't super precise bc geo data and this may mean Patagona is near or flying over open ocean
+# In a few cases, these may be errant values associated with equinox weirdness; we'll address those below
+BJ085.coords.all$elevation_geonames[BJ085.coords.all$elevation_geonames == -32768] <- 0 
+BJ085.stationary$elevation_geonames[BJ085.stationary$elevation_geonames == -32768] <- 0  
+BJ085.stopovers$elevation_geonames[BJ085.stopovers$elevation_geonames == -32768] <- 0 
+
+# Reorder columns in stopover data
+BJ085.stopovers$roworder <- 1:nrow(BJ085.stopovers) # Adding row ID as a proxy for time, since these are all in order 
+  # note that this only works if document is already sorted in order I need
+BJ085.stopovers$geo <- paste("BJ085") # Add geolocator identifier 
+BJ085.stopovers <- BJ085.stopovers[, c(37,38,3,11,17,18,19,20,36,35,21,22,23,24,1,2,4,5,6,7,8,9,10,12,13,14,15,16,25:34)]
+# Need to try to add return to Alfredo's
+
+# Write all of these out
+# write.csv(BJ085.coords.all, "BJ085_GeolocatorData_AllCoords_2023-12-29.csv")
+# write.csv(BJ085.stationary, "BJ085_GeolocatorData_StationaryPeriods_2023-12-29.csv")
+# write.csv(BJ085.stopovers, "BJ085_GeolocatorData_Stopovers_2023-12-29.csv")
+```
+
+
+# BJ090
+```{r fig.width=9, fig.height=9}
+# MAIN STOPOVERS
+# Detect stationary periods by creating 'stopover duration' (i.e., the difference between Departure.Q.50 & Arrival.Q.50)
+# this data frame will give you all stopovers of 2 or more days that exclude the breeding season 
+summary.BJ090.final$Stationary.periods$stopover_duration <- as.numeric(difftime(summary.BJ090.final$Stationary.periods$Departure.Q.50, summary.BJ090.final$Stationary.periods$Arrival.Q.50, units='days')) # stopover duration is in days
+# Select the stationary periods that were >=2 days
+BJ090.stopovers <- summary.BJ090.final$Stationary.periods[is.na(summary.BJ090.final$Stationary.periods$stopover_duration) | summary.BJ090.final$Stationary.periods$stopover_duration>=2,] 
+#BJ090.stopovers <- BJ090.stopovers[-which(is.na(BJ090.stopovers$stopover_duration)),] # delete breeding season
+# NOTE: Coded out because we WANT breeding season for elevation change plots
+
+# Main stopovers have standard deviation estimtes; coords below do NOT (these come from FlightR model vs summary)
+
+# ALL MOVEMENT ESTIMATES
+BJ090.coords.all <- subset(Result.BJ090.final$Results$Quantiles, 
+                           select = c(Medianlat,
+                                      Medianlon,
+                                      LCI.lat,
+                                      UCI.lat,
+                                      LCI.lon,
+                                      UCI.lon,
+                                      time # precise time stamp for each lat/lon estimate
+                                      ))
+
+# POTENTIAL STATIONARY PERIODS
+# Basically, take lat and lon and bind them together for each potential stationary period 
+# Potential stationary periods, their lats, lons, UCI and LCI, and 50% quartile arrival dates (proxies for abs time)
+BJ090.stationary <- subset(Result.BJ090.final$Results$Quantiles, 
+                           select = c(Medianlat,
+                                      Medianlon,
+                                      LCI.lat,
+                                      UCI.lat,
+                                      LCI.lon,
+                                      UCI.lon,
+                                      time # start with precise time stamp; THIS GETS CONVERTED BELOW
+                                      )) 
+for (i in 1:nrow(summary.BJ090.final$Potential_stat_periods)) {
+  BJ090.stationary[summary.BJ090.final$Potential_stat_periods[i,1]: # Median Lat
+    summary.BJ090.final$Potential_stat_periods[i,2],1] =  
+    summary.BJ090.final$Stationary.periods$Medianlat[i]
+  BJ090.stationary[summary.BJ090.final$Potential_stat_periods[i,1]: # Median Lon
+    summary.BJ090.final$Potential_stat_periods[i,2],2] =  
+    summary.BJ090.final$Stationary.periods$Medianlon[i]
+  BJ090.stationary[summary.BJ090.final$Potential_stat_periods[i,1]: # LCI lat
+    summary.BJ090.final$Potential_stat_periods[i,2],3] =
+    summary.BJ090.final$Stationary.periods$LCI.lat[i]
+  BJ090.stationary[summary.BJ090.final$Potential_stat_periods[i,1]: # UCI lat
+    summary.BJ090.final$Potential_stat_periods[i,2],4] =
+    summary.BJ090.final$Stationary.periods$UCI.lat[i]
+  BJ090.stationary[summary.BJ090.final$Potential_stat_periods[i,1]: # LCI lon
+    summary.BJ090.final$Potential_stat_periods[i,2],5] =
+    summary.BJ090.final$Stationary.periods$LCI.lon[i]
+  BJ090.stationary[summary.BJ090.final$Potential_stat_periods[i,1]: # UCI lon
+    summary.BJ090.final$Potential_stat_periods[i,2],6] =
+    summary.BJ090.final$Stationary.periods$UCI.lon[i]
+  BJ090.stationary[summary.BJ090.final$Potential_stat_periods[i,1]: # time 
+    summary.BJ090.final$Potential_stat_periods[i,2],7] =
+    summary.BJ090.final$Stationary.periods$Arrival.Q.50[i] # IMPORTANT! Here I specify 50% quartile arrival times
+  # I could easily specify higher quartile times (though some missing data) OR departure times
+}
+BJ090.stationary <- BJ090.stationary[!duplicated(BJ090.stationary),]
+
+# REMOVE EQUINOX ERROR POINTS
+# Equinox data are problematic and result in error-prone lat/lon estimates; and therefore, elev estimates
+# Let's remove data from the two-week equinox period, i.e., 1 week before and 1 week after equinox
+# March equinox is 03-20, so remove data from 03-13 to 03-27
+# September equinox is 09-22, so remove data from 09-15 to 09-29
+BJ090.stopovers <- BJ090.stopovers %>% filter(Arrival.Q.50 < as.POSIXct("2018-03-13") | Arrival.Q.50 > as.POSIXct("2018-03-27"))
+BJ090.stopovers <- BJ090.stopovers %>% filter(Arrival.Q.50 < as.POSIXct("2018-09-15") | Arrival.Q.50 > as.POSIXct("2018-09-29"))
+BJ090.stationary <- BJ090.stationary %>% filter(time < as.POSIXct("2018-03-13") | time > as.POSIXct("2018-03-27"))
+BJ090.stationary <- BJ090.stationary %>% filter(time < as.POSIXct("2018-09-15") | time > as.POSIXct("2018-09-29"))
+BJ090.coords.all <- BJ090.coords.all %>% filter(time < as.POSIXct("2018-03-13") | time > as.POSIXct("2018-03-27"))
+BJ090.coords.all <- BJ090.coords.all %>% filter(time < as.POSIXct("2018-09-15") | time > as.POSIXct("2018-09-29"))
+
+
+# OBTAIN ELEVATIONS
+# Process of obtaining elevations a little clunky because of required column names; do this iteratively
+# Rename columns - must be 'decimalLatitude' and 'decimalLongitude' for rgbif elevation() function to work 
+BJ090.coords.all <- BJ090.coords.all %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+BJ090.stationary <- BJ090.stationary %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+BJ090.stopovers <- BJ090.stopovers %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+# Consider reordering columns in BJ090.stopovers
+
+# Fetch elevations with elevation() from rgbif
+BJ090.coords.all <- elevation(BJ090.coords.all, elevation_model="srtm3", username="jwilliamson")
+BJ090.stationary <- elevation(BJ090.stationary, elevation_model="srtm3", username="jwilliamson")
+BJ090.stopovers <- elevation(BJ090.stopovers, elevation_model="srtm3", username="jwilliamson")
+
+# Convert 'no data' ocean points (values of -32678) to zero
+# Estimates aren't super precise bc geo data and this may mean Patagona is near or flying over open ocean
+# In a few cases, these may be errant values associated with equinox weirdness; we'll address those below
+BJ090.coords.all$elevation_geonames[BJ090.coords.all$elevation_geonames == -32768] <- 0 
+BJ090.stationary$elevation_geonames[BJ090.stationary$elevation_geonames == -32768] <- 0  
+BJ090.stopovers$elevation_geonames[BJ090.stopovers$elevation_geonames == -32768] <- 0 
+
+# Reorder columns in stopover data
+BJ090.stopovers$roworder <- 1:nrow(BJ090.stopovers) # Adding row ID as a proxy for time, since these are all in order 
+  # note that this only works if document is already sorted in order I need
+BJ090.stopovers$geo <- paste("BJ090") # Add geolocator identifier 
+BJ090.stopovers <- BJ090.stopovers[, c(37,38,3,11,17,18,19,20,36,35,21,22,23,24,1,2,4,5,6,7,8,9,10,12,13,14,15,16,25:34)]
+# Need to try to add return to Alfredo's
+
+# Write all of these out
+# write.csv(BJ090.coords.all, "BJ090_GeolocatorData_AllCoords_2023-12-29.csv")
+# write.csv(BJ090.stationary, "BJ090_GeolocatorData_StationaryPeriods_2023-12-29.csv")
+# write.csv(BJ090.stopovers, "BJ090_GeolocatorData_Stopovers_2023-12-29.csv")
+```
+
+
+# BJ091
+```{r fig.width=9, fig.height=9}
+# MAIN STOPOVERS
+# Detect stationary periods by creating 'stopover duration' (i.e., the difference between Departure.Q.50 & Arrival.Q.50)
+# this data frame will give you all stopovers of 2 or more days that exclude the breeding season 
+summary.BJ091.final$Stationary.periods$stopover_duration <- as.numeric(difftime(summary.BJ091.final$Stationary.periods$Departure.Q.50, summary.BJ091.final$Stationary.periods$Arrival.Q.50, units='days')) # stopover duration is in days
+# Select the stationary periods that were >=2 days
+BJ091.stopovers <- summary.BJ091.final$Stationary.periods[is.na(summary.BJ091.final$Stationary.periods$stopover_duration) | summary.BJ091.final$Stationary.periods$stopover_duration>=2,] 
+#BJ091.stopovers <- BJ091.stopovers[-which(is.na(BJ091.stopovers$stopover_duration)),] # delete breeding season
+# NOTE: Coded out because we WANT breeding season for elevation change plots
+
+# Main stopovers have standard deviation estimtes; coords below do NOT (these come from FlightR model vs summary)
+
+# ALL MOVEMENT ESTIMATES
+BJ091.coords.all <- subset(Result.BJ091.final$Results$Quantiles, 
+                           select = c(Medianlat,
+                                      Medianlon,
+                                      LCI.lat,
+                                      UCI.lat,
+                                      LCI.lon,
+                                      UCI.lon,
+                                      time # precise time stamp for each lat/lon estimate
+                                      ))
+
+# POTENTIAL STATIONARY PERIODS
+# Basically, take lat and lon and bind them together for each potential stationary period 
+# Potential stationary periods, their lats, lons, UCI and LCI, and 50% quartile arrival dates (proxies for abs time)
+BJ091.stationary <- subset(Result.BJ091.final$Results$Quantiles, 
+                           select = c(Medianlat,
+                                      Medianlon,
+                                      LCI.lat,
+                                      UCI.lat,
+                                      LCI.lon,
+                                      UCI.lon,
+                                      time # start with precise time stamp; THIS GETS CONVERTED BELOW
+                                      )) 
+for (i in 1:nrow(summary.BJ091.final$Potential_stat_periods)) {
+  BJ091.stationary[summary.BJ091.final$Potential_stat_periods[i,1]: # Median Lat
+    summary.BJ091.final$Potential_stat_periods[i,2],1] =  
+    summary.BJ091.final$Stationary.periods$Medianlat[i]
+  BJ091.stationary[summary.BJ091.final$Potential_stat_periods[i,1]: # Median Lon
+    summary.BJ091.final$Potential_stat_periods[i,2],2] =  
+    summary.BJ091.final$Stationary.periods$Medianlon[i]
+  BJ091.stationary[summary.BJ091.final$Potential_stat_periods[i,1]: # LCI lat
+    summary.BJ091.final$Potential_stat_periods[i,2],3] =
+    summary.BJ091.final$Stationary.periods$LCI.lat[i]
+  BJ091.stationary[summary.BJ091.final$Potential_stat_periods[i,1]: # UCI lat
+    summary.BJ091.final$Potential_stat_periods[i,2],4] =
+    summary.BJ091.final$Stationary.periods$UCI.lat[i]
+  BJ091.stationary[summary.BJ091.final$Potential_stat_periods[i,1]: # LCI lon
+    summary.BJ091.final$Potential_stat_periods[i,2],5] =
+    summary.BJ091.final$Stationary.periods$LCI.lon[i]
+  BJ091.stationary[summary.BJ091.final$Potential_stat_periods[i,1]: # UCI lon
+    summary.BJ091.final$Potential_stat_periods[i,2],6] =
+    summary.BJ091.final$Stationary.periods$UCI.lon[i]
+  BJ091.stationary[summary.BJ091.final$Potential_stat_periods[i,1]: # time 
+    summary.BJ091.final$Potential_stat_periods[i,2],7] =
+    summary.BJ091.final$Stationary.periods$Arrival.Q.50[i] # IMPORTANT! Here I specify 50% quartile arrival times
+  # I could easily specify higher quartile times (though some missing data) OR departure times
+}
+BJ091.stationary <- BJ091.stationary[!duplicated(BJ091.stationary),]
+
+# REMOVE EQUINOX ERROR POINTS
+# Equinox data are problematic and result in error-prone lat/lon estimates; and therefore, elev estimates
+# Let's remove data from the two-week equinox period, i.e., 1 week before and 1 week after equinox
+# March equinox is 03-20, so remove data from 03-13 to 03-27
+# September equinox is 09-22, so remove data from 09-15 to 09-29
+BJ091.stopovers <- BJ091.stopovers %>% filter(Arrival.Q.50 < as.POSIXct("2018-03-13") | Arrival.Q.50 > as.POSIXct("2018-03-27"))
+BJ091.stopovers <- BJ091.stopovers %>% filter(Arrival.Q.50 < as.POSIXct("2018-09-15") | Arrival.Q.50 > as.POSIXct("2018-09-29"))
+BJ091.stationary <- BJ091.stationary %>% filter(time < as.POSIXct("2018-03-13") | time > as.POSIXct("2018-03-27"))
+BJ091.stationary <- BJ091.stationary %>% filter(time < as.POSIXct("2018-09-15") | time > as.POSIXct("2018-09-29"))
+BJ091.coords.all <- BJ091.coords.all %>% filter(time < as.POSIXct("2018-03-13") | time > as.POSIXct("2018-03-27"))
+BJ091.coords.all <- BJ091.coords.all %>% filter(time < as.POSIXct("2018-09-15") | time > as.POSIXct("2018-09-29"))
+
+
+# OBTAIN ELEVATIONS
+# Process of obtaining elevations a little clunky because of required column names; do this iteratively
+# Rename columns - must be 'decimalLatitude' and 'decimalLongitude' for rgbif elevation() function to work 
+BJ091.coords.all <- BJ091.coords.all %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+BJ091.stationary <- BJ091.stationary %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+BJ091.stopovers <- BJ091.stopovers %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+# Consider reordering columns in BJ091.stopovers
+
+# Fetch elevations with elevation() from rgbif
+BJ091.coords.all <- elevation(BJ091.coords.all, elevation_model="srtm3", username="jwilliamson")
+BJ091.stationary <- elevation(BJ091.stationary, elevation_model="srtm3", username="jwilliamson")
+BJ091.stopovers <- elevation(BJ091.stopovers, elevation_model="srtm3", username="jwilliamson")
+
+# Convert 'no data' ocean points (values of -32678) to zero
+# Estimates aren't super precise bc geo data and this may mean Patagona is near or flying over open ocean
+# In a few cases, these may be errant values associated with equinox weirdness; we'll address those below
+BJ091.coords.all$elevation_geonames[BJ091.coords.all$elevation_geonames == -32768] <- 0 
+BJ091.stationary$elevation_geonames[BJ091.stationary$elevation_geonames == -32768] <- 0  
+BJ091.stopovers$elevation_geonames[BJ091.stopovers$elevation_geonames == -32768] <- 0 
+
+# Reorder columns in stopover data
+BJ091.stopovers$roworder <- 1:nrow(BJ091.stopovers) # Adding row ID as a proxy for time, since these are all in order 
+  # note that this only works if document is already sorted in order I need
+BJ091.stopovers$geo <- paste("BJ091") # Add geolocator identifier 
+BJ091.stopovers <- BJ091.stopovers[, c(37,38,3,11,17,18,19,20,36,35,21,22,23,24,1,2,4,5,6,7,8,9,10,12,13,14,15,16,25:34)]
+# Need to try to add return to Alfredo's
+
+# Write all of these out
+# write.csv(BJ091.coords.all, "BJ091_GeolocatorData_AllCoords_2023-12-29.csv")
+# write.csv(BJ091.stationary, "BJ091_GeolocatorData_StationaryPeriods_2023-12-29.csv")
+# write.csv(BJ091.stopovers, "BJ091_GeolocatorData_Stopovers_2023-12-29.csv")
+```
+
+
+# BJ104
+```{r fig.width=9, fig.height=9}
+# MAIN STOPOVERS
+# Detect stationary periods by creating 'stopover duration' (i.e., the difference between Departure.Q.50 & Arrival.Q.50)
+# this data frame will give you all stopovers of 2 or more days that exclude the breeding season 
+summary.BJ104.final$Stationary.periods$stopover_duration <- as.numeric(difftime(summary.BJ104.final$Stationary.periods$Departure.Q.50, summary.BJ104.final$Stationary.periods$Arrival.Q.50, units='days')) # stopover duration is in days
+# Select the stationary periods that were >=2 days
+BJ104.stopovers <- summary.BJ104.final$Stationary.periods[is.na(summary.BJ104.final$Stationary.periods$stopover_duration) | summary.BJ104.final$Stationary.periods$stopover_duration>=2,] 
+#BJ104.stopovers <- BJ104.stopovers[-which(is.na(BJ104.stopovers$stopover_duration)),] # delete breeding season
+# NOTE: Coded out because we WANT breeding season for elevation change plots
+
+# Main stopovers have standard deviation estimtes; coords below do NOT (these come from FlightR model vs summary)
+
+# ALL MOVEMENT ESTIMATES
+BJ104.coords.all <- subset(Result.BJ104.final$Results$Quantiles, 
+                           select = c(Medianlat,
+                                      Medianlon,
+                                      LCI.lat,
+                                      UCI.lat,
+                                      LCI.lon,
+                                      UCI.lon,
+                                      time # precise time stamp for each lat/lon estimate
+                                      ))
+
+# POTENTIAL STATIONARY PERIODS
+# Basically, take lat and lon and bind them together for each potential stationary period 
+# Potential stationary periods, their lats, lons, UCI and LCI, and 50% quartile arrival dates (proxies for abs time)
+BJ104.stationary <- subset(Result.BJ104.final$Results$Quantiles, 
+                           select = c(Medianlat,
+                                      Medianlon,
+                                      LCI.lat,
+                                      UCI.lat,
+                                      LCI.lon,
+                                      UCI.lon,
+                                      time # start with precise time stamp; THIS GETS CONVERTED BELOW
+                                      )) 
+for (i in 1:nrow(summary.BJ104.final$Potential_stat_periods)) {
+  BJ104.stationary[summary.BJ104.final$Potential_stat_periods[i,1]: # Median Lat
+    summary.BJ104.final$Potential_stat_periods[i,2],1] =  
+    summary.BJ104.final$Stationary.periods$Medianlat[i]
+  BJ104.stationary[summary.BJ104.final$Potential_stat_periods[i,1]: # Median Lon
+    summary.BJ104.final$Potential_stat_periods[i,2],2] =  
+    summary.BJ104.final$Stationary.periods$Medianlon[i]
+  BJ104.stationary[summary.BJ104.final$Potential_stat_periods[i,1]: # LCI lat
+    summary.BJ104.final$Potential_stat_periods[i,2],3] =
+    summary.BJ104.final$Stationary.periods$LCI.lat[i]
+  BJ104.stationary[summary.BJ104.final$Potential_stat_periods[i,1]: # UCI lat
+    summary.BJ104.final$Potential_stat_periods[i,2],4] =
+    summary.BJ104.final$Stationary.periods$UCI.lat[i]
+  BJ104.stationary[summary.BJ104.final$Potential_stat_periods[i,1]: # LCI lon
+    summary.BJ104.final$Potential_stat_periods[i,2],5] =
+    summary.BJ104.final$Stationary.periods$LCI.lon[i]
+  BJ104.stationary[summary.BJ104.final$Potential_stat_periods[i,1]: # UCI lon
+    summary.BJ104.final$Potential_stat_periods[i,2],6] =
+    summary.BJ104.final$Stationary.periods$UCI.lon[i]
+  BJ104.stationary[summary.BJ104.final$Potential_stat_periods[i,1]: # time 
+    summary.BJ104.final$Potential_stat_periods[i,2],7] =
+    summary.BJ104.final$Stationary.periods$Arrival.Q.50[i] # IMPORTANT! Here I specify 50% quartile arrival times
+  # I could easily specify higher quartile times (though some missing data) OR departure times
+}
+BJ104.stationary <- BJ104.stationary[!duplicated(BJ104.stationary),]
+
+# REMOVE EQUINOX ERROR POINTS
+# Equinox data are problematic and result in error-prone lat/lon estimates; and therefore, elev estimates
+# Let's remove data from the two-week equinox period, i.e., 1 week before and 1 week after equinox
+# March equinox is 03-20, so remove data from 03-13 to 03-27
+# September equinox is 09-22, so remove data from 09-15 to 09-29
+BJ104.stopovers <- BJ104.stopovers %>% filter(Arrival.Q.50 < as.POSIXct("2018-03-13") | Arrival.Q.50 > as.POSIXct("2018-03-27"))
+BJ104.stopovers <- BJ104.stopovers %>% filter(Arrival.Q.50 < as.POSIXct("2018-09-15") | Arrival.Q.50 > as.POSIXct("2018-09-29"))
+BJ104.stationary <- BJ104.stationary %>% filter(time < as.POSIXct("2018-03-13") | time > as.POSIXct("2018-03-27"))
+BJ104.stationary <- BJ104.stationary %>% filter(time < as.POSIXct("2018-09-15") | time > as.POSIXct("2018-09-29"))
+BJ104.coords.all <- BJ104.coords.all %>% filter(time < as.POSIXct("2018-03-13") | time > as.POSIXct("2018-03-27"))
+BJ104.coords.all <- BJ104.coords.all %>% filter(time < as.POSIXct("2018-09-15") | time > as.POSIXct("2018-09-29"))
+
+
+# OBTAIN ELEVATIONS
+# Process of obtaining elevations a little clunky because of required column names; do this iteratively
+# Rename columns - must be 'decimalLatitude' and 'decimalLongitude' for rgbif elevation() function to work 
+BJ104.coords.all <- BJ104.coords.all %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+BJ104.stationary <- BJ104.stationary %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+BJ104.stopovers <- BJ104.stopovers %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+# Consider reordering columns in BJ104.stopovers
+
+# Fetch elevations with elevation() from rgbif
+BJ104.coords.all <- elevation(BJ104.coords.all, elevation_model="srtm3", username="jwilliamson")
+BJ104.stationary <- elevation(BJ104.stationary, elevation_model="srtm3", username="jwilliamson")
+BJ104.stopovers <- elevation(BJ104.stopovers, elevation_model="srtm3", username="jwilliamson")
+
+# Convert 'no data' ocean points (values of -32678) to zero
+# Estimates aren't super precise bc geo data and this may mean Patagona is near or flying over open ocean
+# In a few cases, these may be errant values associated with equinox weirdness; we'll address those below
+BJ104.coords.all$elevation_geonames[BJ104.coords.all$elevation_geonames == -32768] <- 0 
+BJ104.stationary$elevation_geonames[BJ104.stationary$elevation_geonames == -32768] <- 0  
+BJ104.stopovers$elevation_geonames[BJ104.stopovers$elevation_geonames == -32768] <- 0 
+
+# Reorder columns in stopover data
+BJ104.stopovers$roworder <- 1:nrow(BJ104.stopovers) # Adding row ID as a proxy for time, since these are all in order 
+  # note that this only works if document is already sorted in order I need
+BJ104.stopovers$geo <- paste("BJ104") # Add geolocator identifier 
+BJ104.stopovers <- BJ104.stopovers[, c(37,38,3,11,17,18,19,20,36,35,21,22,23,24,1,2,4,5,6,7,8,9,10,12,13,14,15,16,25:34)]
+# Need to try to add return to Alfredo's
+
+# Write all of these out
+# write.csv(BJ104.coords.all, "BJ104_GeolocatorData_AllCoords_2023-12-29.csv")
+# write.csv(BJ104.stationary, "BJ104_GeolocatorData_StationaryPeriods_2023-12-29.csv")
+# write.csv(BJ104.stopovers, "BJ104_GeolocatorData_Stopovers_2023-12-29.csv")
+```
+
+
+# BJ105
+```{r fig.width=9, fig.height=9}
+# MAIN STOPOVERS
+# Detect stationary periods by creating 'stopover duration' (i.e., the difference between Departure.Q.50 & Arrival.Q.50)
+# this data frame will give you all stopovers of 2 or more days that exclude the breeding season 
+summary.BJ105.final$Stationary.periods$stopover_duration <- as.numeric(difftime(summary.BJ105.final$Stationary.periods$Departure.Q.50, summary.BJ105.final$Stationary.periods$Arrival.Q.50, units='days')) # stopover duration is in days
+# Select the stationary periods that were >=2 days
+BJ105.stopovers <- summary.BJ105.final$Stationary.periods[is.na(summary.BJ105.final$Stationary.periods$stopover_duration) | summary.BJ105.final$Stationary.periods$stopover_duration>=2,] 
+#BJ105.stopovers <- BJ105.stopovers[-which(is.na(BJ105.stopovers$stopover_duration)),] # delete breeding season
+# NOTE: Coded out because we WANT breeding season for elevation change plots
+
+# Main stopovers have standard deviation estimtes; coords below do NOT (these come from FlightR model vs summary)
+
+# ALL MOVEMENT ESTIMATES
+BJ105.coords.all <- subset(Result.BJ105.final$Results$Quantiles, 
+                           select = c(Medianlat,
+                                      Medianlon,
+                                      LCI.lat,
+                                      UCI.lat,
+                                      LCI.lon,
+                                      UCI.lon,
+                                      time # precise time stamp for each lat/lon estimate
+                                      ))
+
+# POTENTIAL STATIONARY PERIODS
+# Basically, take lat and lon and bind them together for each potential stationary period 
+# Potential stationary periods, their lats, lons, UCI and LCI, and 50% quartile arrival dates (proxies for abs time)
+BJ105.stationary <- subset(Result.BJ105.final$Results$Quantiles, 
+                           select = c(Medianlat,
+                                      Medianlon,
+                                      LCI.lat,
+                                      UCI.lat,
+                                      LCI.lon,
+                                      UCI.lon,
+                                      time # start with precise time stamp; THIS GETS CONVERTED BELOW
+                                      )) 
+for (i in 1:nrow(summary.BJ105.final$Potential_stat_periods)) {
+  BJ105.stationary[summary.BJ105.final$Potential_stat_periods[i,1]: # Median Lat
+    summary.BJ105.final$Potential_stat_periods[i,2],1] =  
+    summary.BJ105.final$Stationary.periods$Medianlat[i]
+  BJ105.stationary[summary.BJ105.final$Potential_stat_periods[i,1]: # Median Lon
+    summary.BJ105.final$Potential_stat_periods[i,2],2] =  
+    summary.BJ105.final$Stationary.periods$Medianlon[i]
+  BJ105.stationary[summary.BJ105.final$Potential_stat_periods[i,1]: # LCI lat
+    summary.BJ105.final$Potential_stat_periods[i,2],3] =
+    summary.BJ105.final$Stationary.periods$LCI.lat[i]
+  BJ105.stationary[summary.BJ105.final$Potential_stat_periods[i,1]: # UCI lat
+    summary.BJ105.final$Potential_stat_periods[i,2],4] =
+    summary.BJ105.final$Stationary.periods$UCI.lat[i]
+  BJ105.stationary[summary.BJ105.final$Potential_stat_periods[i,1]: # LCI lon
+    summary.BJ105.final$Potential_stat_periods[i,2],5] =
+    summary.BJ105.final$Stationary.periods$LCI.lon[i]
+  BJ105.stationary[summary.BJ105.final$Potential_stat_periods[i,1]: # UCI lon
+    summary.BJ105.final$Potential_stat_periods[i,2],6] =
+    summary.BJ105.final$Stationary.periods$UCI.lon[i]
+  BJ105.stationary[summary.BJ105.final$Potential_stat_periods[i,1]: # time 
+    summary.BJ105.final$Potential_stat_periods[i,2],7] =
+    summary.BJ105.final$Stationary.periods$Arrival.Q.50[i] # IMPORTANT! Here I specify 50% quartile arrival times
+  # I could easily specify higher quartile times (though some missing data) OR departure times
+}
+BJ105.stationary <- BJ105.stationary[!duplicated(BJ105.stationary),]
+
+# REMOVE EQUINOX ERROR POINTS
+# Equinox data are problematic and result in error-prone lat/lon estimates; and therefore, elev estimates
+# Let's remove data from the two-week equinox period, i.e., 1 week before and 1 week after equinox
+# March equinox is 03-20, so remove data from 03-13 to 03-27
+# September equinox is 09-22, so remove data from 09-15 to 09-29
+BJ105.stopovers <- BJ105.stopovers %>% filter(Arrival.Q.50 < as.POSIXct("2018-03-13") | Arrival.Q.50 > as.POSIXct("2018-03-27"))
+BJ105.stopovers <- BJ105.stopovers %>% filter(Arrival.Q.50 < as.POSIXct("2018-09-15") | Arrival.Q.50 > as.POSIXct("2018-09-29"))
+BJ105.stationary <- BJ105.stationary %>% filter(time < as.POSIXct("2018-03-13") | time > as.POSIXct("2018-03-27"))
+BJ105.stationary <- BJ105.stationary %>% filter(time < as.POSIXct("2018-09-15") | time > as.POSIXct("2018-09-29"))
+BJ105.coords.all <- BJ105.coords.all %>% filter(time < as.POSIXct("2018-03-13") | time > as.POSIXct("2018-03-27"))
+BJ105.coords.all <- BJ105.coords.all %>% filter(time < as.POSIXct("2018-09-15") | time > as.POSIXct("2018-09-29"))
+
+
+# OBTAIN ELEVATIONS
+# Process of obtaining elevations a little clunky because of required column names; do this iteratively
+# Rename columns - must be 'decimalLatitude' and 'decimalLongitude' for rgbif elevation() function to work 
+BJ105.coords.all <- BJ105.coords.all %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+BJ105.stationary <- BJ105.stationary %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+BJ105.stopovers <- BJ105.stopovers %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+# Consider reordering columns in BJ105.stopovers
+
+# Fetch elevations with elevation() from rgbif
+BJ105.coords.all <- elevation(BJ105.coords.all, elevation_model="srtm3", username="jwilliamson")
+BJ105.stationary <- elevation(BJ105.stationary, elevation_model="srtm3", username="jwilliamson")
+BJ105.stopovers <- elevation(BJ105.stopovers, elevation_model="srtm3", username="jwilliamson")
+
+# Convert 'no data' ocean points (values of -32678) to zero
+# Estimates aren't super precise bc geo data and this may mean Patagona is near or flying over open ocean
+# In a few cases, these may be errant values associated with equinox weirdness; we'll address those below
+BJ105.coords.all$elevation_geonames[BJ105.coords.all$elevation_geonames == -32768] <- 0 
+BJ105.stationary$elevation_geonames[BJ105.stationary$elevation_geonames == -32768] <- 0  
+BJ105.stopovers$elevation_geonames[BJ105.stopovers$elevation_geonames == -32768] <- 0 
+
+# Reorder columns in stopover data
+BJ105.stopovers$roworder <- 1:nrow(BJ105.stopovers) # Adding row ID as a proxy for time, since these are all in order 
+  # note that this only works if document is already sorted in order I need
+BJ105.stopovers$geo <- paste("BJ105") # Add geolocator identifier 
+BJ105.stopovers <- BJ105.stopovers[, c(37,38,3,11,17,18,19,20,36,35,21,22,23,24,1,2,4,5,6,7,8,9,10,12,13,14,15,16,25:34)]
+# Need to try to add return to Alfredo's
+
+# Write all of these out
+# write.csv(BJ105.coords.all, "BJ105_GeolocatorData_AllCoords_2023-12-29.csv")
+# write.csv(BJ105.stationary, "BJ105_GeolocatorData_StationaryPeriods_2023-12-29.csv")
+# write.csv(BJ105.stopovers, "BJ105_GeolocatorData_Stopovers_2023-12-29.csv")
+```
+
+
+# BJ112
+```{r fig.width=9, fig.height=9}
+# MAIN STOPOVERS
+# Detect stationary periods by creating 'stopover duration' (i.e., the difference between Departure.Q.50 & Arrival.Q.50)
+# this data frame will give you all stopovers of 2 or more days that exclude the breeding season 
+summary.BJ112.final$Stationary.periods$stopover_duration <- as.numeric(difftime(summary.BJ112.final$Stationary.periods$Departure.Q.50, summary.BJ112.final$Stationary.periods$Arrival.Q.50, units='days')) # stopover duration is in days
+# Select the stationary periods that were >=2 days
+BJ112.stopovers <- summary.BJ112.final$Stationary.periods[is.na(summary.BJ112.final$Stationary.periods$stopover_duration) | summary.BJ112.final$Stationary.periods$stopover_duration>=2,] 
+#BJ112.stopovers <- BJ112.stopovers[-which(is.na(BJ112.stopovers$stopover_duration)),] # delete breeding season
+# NOTE: Coded out because we WANT breeding season for elevation change plots
+
+# Main stopovers have standard deviation estimtes; coords below do NOT (these come from FlightR model vs summary)
+
+# ALL MOVEMENT ESTIMATES
+BJ112.coords.all <- subset(Result.BJ112.final$Results$Quantiles, 
+                           select = c(Medianlat,
+                                      Medianlon,
+                                      LCI.lat,
+                                      UCI.lat,
+                                      LCI.lon,
+                                      UCI.lon,
+                                      time # precise time stamp for each lat/lon estimate
+                                      ))
+
+# POTENTIAL STATIONARY PERIODS
+# Basically, take lat and lon and bind them together for each potential stationary period 
+# Potential stationary periods, their lats, lons, UCI and LCI, and 50% quartile arrival dates (proxies for abs time)
+BJ112.stationary <- subset(Result.BJ112.final$Results$Quantiles, 
+                           select = c(Medianlat,
+                                      Medianlon,
+                                      LCI.lat,
+                                      UCI.lat,
+                                      LCI.lon,
+                                      UCI.lon,
+                                      time # start with precise time stamp; THIS GETS CONVERTED BELOW
+                                      )) 
+for (i in 1:nrow(summary.BJ112.final$Potential_stat_periods)) {
+  BJ112.stationary[summary.BJ112.final$Potential_stat_periods[i,1]: # Median Lat
+    summary.BJ112.final$Potential_stat_periods[i,2],1] =  
+    summary.BJ112.final$Stationary.periods$Medianlat[i]
+  BJ112.stationary[summary.BJ112.final$Potential_stat_periods[i,1]: # Median Lon
+    summary.BJ112.final$Potential_stat_periods[i,2],2] =  
+    summary.BJ112.final$Stationary.periods$Medianlon[i]
+  BJ112.stationary[summary.BJ112.final$Potential_stat_periods[i,1]: # LCI lat
+    summary.BJ112.final$Potential_stat_periods[i,2],3] =
+    summary.BJ112.final$Stationary.periods$LCI.lat[i]
+  BJ112.stationary[summary.BJ112.final$Potential_stat_periods[i,1]: # UCI lat
+    summary.BJ112.final$Potential_stat_periods[i,2],4] =
+    summary.BJ112.final$Stationary.periods$UCI.lat[i]
+  BJ112.stationary[summary.BJ112.final$Potential_stat_periods[i,1]: # LCI lon
+    summary.BJ112.final$Potential_stat_periods[i,2],5] =
+    summary.BJ112.final$Stationary.periods$LCI.lon[i]
+  BJ112.stationary[summary.BJ112.final$Potential_stat_periods[i,1]: # UCI lon
+    summary.BJ112.final$Potential_stat_periods[i,2],6] =
+    summary.BJ112.final$Stationary.periods$UCI.lon[i]
+  BJ112.stationary[summary.BJ112.final$Potential_stat_periods[i,1]: # time 
+    summary.BJ112.final$Potential_stat_periods[i,2],7] =
+    summary.BJ112.final$Stationary.periods$Arrival.Q.50[i] # IMPORTANT! Here I specify 50% quartile arrival times
+  # I could easily specify higher quartile times (though some missing data) OR departure times
+}
+BJ112.stationary <- BJ112.stationary[!duplicated(BJ112.stationary),]
+
+# REMOVE EQUINOX ERROR POINTS
+# Equinox data are problematic and result in error-prone lat/lon estimates; and therefore, elev estimates
+# Let's remove data from the two-week equinox period, i.e., 1 week before and 1 week after equinox
+# March equinox is 03-20, so remove data from 03-13 to 03-27
+# September equinox is 09-22, so remove data from 09-15 to 09-29
+BJ112.stopovers <- BJ112.stopovers %>% filter(Arrival.Q.50 < as.POSIXct("2018-03-13") | Arrival.Q.50 > as.POSIXct("2018-03-27"))
+BJ112.stopovers <- BJ112.stopovers %>% filter(Arrival.Q.50 < as.POSIXct("2018-09-15") | Arrival.Q.50 > as.POSIXct("2018-09-29"))
+BJ112.stationary <- BJ112.stationary %>% filter(time < as.POSIXct("2018-03-13") | time > as.POSIXct("2018-03-27"))
+BJ112.stationary <- BJ112.stationary %>% filter(time < as.POSIXct("2018-09-15") | time > as.POSIXct("2018-09-29"))
+BJ112.coords.all <- BJ112.coords.all %>% filter(time < as.POSIXct("2018-03-13") | time > as.POSIXct("2018-03-27"))
+BJ112.coords.all <- BJ112.coords.all %>% filter(time < as.POSIXct("2018-09-15") | time > as.POSIXct("2018-09-29"))
+
+
+# OBTAIN ELEVATIONS
+# Process of obtaining elevations a little clunky because of required column names; do this iteratively
+# Rename columns - must be 'decimalLatitude' and 'decimalLongitude' for rgbif elevation() function to work 
+BJ112.coords.all <- BJ112.coords.all %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+BJ112.stationary <- BJ112.stationary %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+BJ112.stopovers <- BJ112.stopovers %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+# Consider reordering columns in BJ112.stopovers
+
+# Fetch elevations with elevation() from rgbif
+BJ112.coords.all <- elevation(BJ112.coords.all, elevation_model="srtm3", username="jwilliamson")
+BJ112.stationary <- elevation(BJ112.stationary, elevation_model="srtm3", username="jwilliamson")
+BJ112.stopovers <- elevation(BJ112.stopovers, elevation_model="srtm3", username="jwilliamson")
+
+# Convert 'no data' ocean points (values of -32678) to zero
+# Estimates aren't super precise bc geo data and this may mean Patagona is near or flying over open ocean
+# In a few cases, these may be errant values associated with equinox weirdness; we'll address those below
+BJ112.coords.all$elevation_geonames[BJ112.coords.all$elevation_geonames == -32768] <- 0 
+BJ112.stationary$elevation_geonames[BJ112.stationary$elevation_geonames == -32768] <- 0  
+BJ112.stopovers$elevation_geonames[BJ112.stopovers$elevation_geonames == -32768] <- 0 
+
+# Reorder columns in stopover data
+BJ112.stopovers$roworder <- 1:nrow(BJ112.stopovers) # Adding row ID as a proxy for time, since these are all in order 
+  # note that this only works if document is already sorted in order I need
+BJ112.stopovers$geo <- paste("BJ112") # Add geolocator identifier 
+BJ112.stopovers <- BJ112.stopovers[, c(37,38,3,11,17,18,19,20,36,35,21,22,23,24,1,2,4,5,6,7,8,9,10,12,13,14,15,16,25:34)]
+# Need to try to add return to Alfredo's
+
+# Write all of these out
+# write.csv(BJ112.coords.all, "BJ112_GeolocatorData_AllCoords_2023-12-29.csv")
+# write.csv(BJ112.stationary, "BJ112_GeolocatorData_StationaryPeriods_2023-12-29.csv")
+# write.csv(BJ112.stopovers, "BJ112_GeolocatorData_Stopovers_2023-12-29.csv")
+```
+
+
+# BC377
+```{r fig.width=9, fig.height=9}
+# MAIN STOPOVERS
+# Detect stationary periods by creating 'stopover duration' (i.e., the difference between Departure.Q.50 & Arrival.Q.50)
+# this data frame will give you all stopovers of 2 or more days that exclude the breeding season 
+summary.BC377.final$Stationary.periods$stopover_duration <- as.numeric(difftime(summary.BC377.final$Stationary.periods$Departure.Q.50, summary.BC377.final$Stationary.periods$Arrival.Q.50, units='days')) # stopover duration is in days
+# Select the stationary periods that were >=2 days
+BC377.stopovers <- summary.BC377.final$Stationary.periods[is.na(summary.BC377.final$Stationary.periods$stopover_duration) | summary.BC377.final$Stationary.periods$stopover_duration>=2,] 
+#BC377.stopovers <- BC377.stopovers[-which(is.na(BC377.stopovers$stopover_duration)),] # delete breeding season
+# NOTE: Coded out because we WANT breeding season for elevation change plots
+
+# Main stopovers have standard deviation estimtes; coords below do NOT (these come from FlightR model vs summary)
+
+# ALL MOVEMENT ESTIMATES
+BC377.coords.all <- subset(Result.BC377.final$Results$Quantiles, 
+                           select = c(Medianlat,
+                                      Medianlon,
+                                      LCI.lat,
+                                      UCI.lat,
+                                      LCI.lon,
+                                      UCI.lon,
+                                      time # precise time stamp for each lat/lon estimate
+                                      ))
+
+# POTENTIAL STATIONARY PERIODS
+# Basically, take lat and lon and bind them together for each potential stationary period 
+# Potential stationary periods, their lats, lons, UCI and LCI, and 50% quartile arrival dates (proxies for abs time)
+BC377.stationary <- subset(Result.BC377.final$Results$Quantiles, 
+                           select = c(Medianlat,
+                                      Medianlon,
+                                      LCI.lat,
+                                      UCI.lat,
+                                      LCI.lon,
+                                      UCI.lon,
+                                      time # start with precise time stamp; THIS GETS CONVERTED BELOW
+                                      )) 
+for (i in 1:nrow(summary.BC377.final$Potential_stat_periods)) {
+  BC377.stationary[summary.BC377.final$Potential_stat_periods[i,1]: # Median Lat
+    summary.BC377.final$Potential_stat_periods[i,2],1] =  
+    summary.BC377.final$Stationary.periods$Medianlat[i]
+  BC377.stationary[summary.BC377.final$Potential_stat_periods[i,1]: # Median Lon
+    summary.BC377.final$Potential_stat_periods[i,2],2] =  
+    summary.BC377.final$Stationary.periods$Medianlon[i]
+  BC377.stationary[summary.BC377.final$Potential_stat_periods[i,1]: # LCI lat
+    summary.BC377.final$Potential_stat_periods[i,2],3] =
+    summary.BC377.final$Stationary.periods$LCI.lat[i]
+  BC377.stationary[summary.BC377.final$Potential_stat_periods[i,1]: # UCI lat
+    summary.BC377.final$Potential_stat_periods[i,2],4] =
+    summary.BC377.final$Stationary.periods$UCI.lat[i]
+  BC377.stationary[summary.BC377.final$Potential_stat_periods[i,1]: # LCI lon
+    summary.BC377.final$Potential_stat_periods[i,2],5] =
+    summary.BC377.final$Stationary.periods$LCI.lon[i]
+  BC377.stationary[summary.BC377.final$Potential_stat_periods[i,1]: # UCI lon
+    summary.BC377.final$Potential_stat_periods[i,2],6] =
+    summary.BC377.final$Stationary.periods$UCI.lon[i]
+  BC377.stationary[summary.BC377.final$Potential_stat_periods[i,1]: # time 
+    summary.BC377.final$Potential_stat_periods[i,2],7] =
+    summary.BC377.final$Stationary.periods$Arrival.Q.50[i] # IMPORTANT! Here I specify 50% quartile arrival times
+  # I could easily specify higher quartile times (though some missing data) OR departure times
+}
+BC377.stationary <- BC377.stationary[!duplicated(BC377.stationary),]
+
+# REMOVE EQUINOX ERROR POINTS
+# Equinox data are problematic and result in error-prone lat/lon estimates; and therefore, elev estimates
+# Let's remove data from the two-week equinox period, i.e., 1 week before and 1 week after equinox
+# March equinox is 03-20, so remove data from 03-13 to 03-27
+# September equinox is 09-22, so remove data from 09-15 to 09-29
+BC377.stopovers <- BC377.stopovers %>% filter(Arrival.Q.50 < as.POSIXct("2018-03-13") | Arrival.Q.50 > as.POSIXct("2018-03-27"))
+BC377.stopovers <- BC377.stopovers %>% filter(Arrival.Q.50 < as.POSIXct("2018-09-15") | Arrival.Q.50 > as.POSIXct("2018-09-29"))
+BC377.stationary <- BC377.stationary %>% filter(time < as.POSIXct("2018-03-13") | time > as.POSIXct("2018-03-27"))
+BC377.stationary <- BC377.stationary %>% filter(time < as.POSIXct("2018-09-15") | time > as.POSIXct("2018-09-29"))
+BC377.coords.all <- BC377.coords.all %>% filter(time < as.POSIXct("2018-03-13") | time > as.POSIXct("2018-03-27"))
+BC377.coords.all <- BC377.coords.all %>% filter(time < as.POSIXct("2018-09-15") | time > as.POSIXct("2018-09-29"))
+
+
+# OBTAIN ELEVATIONS
+# Process of obtaining elevations a little clunky because of required column names; do this iteratively
+# Rename columns - must be 'decimalLatitude' and 'decimalLongitude' for rgbif elevation() function to work 
+BC377.coords.all <- BC377.coords.all %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+BC377.stationary <- BC377.stationary %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+BC377.stopovers <- BC377.stopovers %>% rename(decimalLatitude = Medianlat, decimalLongitude = Medianlon)
+# Consider reordering columns in BC377.stopovers
+
+# Fetch elevations with elevation() from rgbif
+BC377.coords.all <- elevation(BC377.coords.all, elevation_model="srtm3", username="jwilliamson")
+BC377.stationary <- elevation(BC377.stationary, elevation_model="srtm3", username="jwilliamson")
+BC377.stopovers <- elevation(BC377.stopovers, elevation_model="srtm3", username="jwilliamson")
+
+# Convert 'no data' ocean points (values of -32678) to zero
+# Estimates aren't super precise bc geo data and this may mean Patagona is near or flying over open ocean
+# In a few cases, these may be errant values associated with equinox weirdness; we'll address those below
+BC377.coords.all$elevation_geonames[BC377.coords.all$elevation_geonames == -32768] <- 0 
+BC377.stationary$elevation_geonames[BC377.stationary$elevation_geonames == -32768] <- 0  
+BC377.stopovers$elevation_geonames[BC377.stopovers$elevation_geonames == -32768] <- 0 
+
+# Reorder columns in stopover data
+BC377.stopovers$roworder <- 1:nrow(BC377.stopovers) # Adding row ID as a proxy for time, since these are all in order 
+  # note that this only works if document is already sorted in order I need
+BC377.stopovers$geo <- paste("BC377") # Add geolocator identifier 
+BC377.stopovers <- BC377.stopovers[, c(37,38,3,11,17,18,19,20,36,35,21,22,23,24,1,2,4,5,6,7,8,9,10,12,13,14,15,16,25:34)]
+# Need to try to add return to Alfredo's
+
+
+# Write all of these out
+# write.csv(BC377.coords.all, "BC377_GeolocatorData_AllCoords_2023-12-29.csv")
+# write.csv(BC377.stationary, "BC377_GeolocatorData_StationaryPeriods_2023-12-29.csv")
+# write.csv(BC377.stopovers, "BC377_GeolocatorData_Stopovers_2023-12-29.csv")
+```
+
+
+# Combine all geolocator stopover datasets
+```{r}
+all.geos.stopovers <- rbind(BJ085.stopovers, BJ090.stopovers, BJ091.stopovers, BJ104.stopovers, BJ105.stopovers, BJ112.stopovers, BC377.stopovers)
+str(all.geos.stopovers)
+#write.csv(all.geos.stopovers, "Patagona_AllGeolocator_StopoverData_2023-12-29.csv") 
+```
+
+
+# Process map spatial data
+Note: Only need to download and run this once! These are cumbersome files. Just load them in below.
+```{r}
+# DOWNLOAD COUNTRY POLYGONS 
+# Search country 3-letter ISO code: https://www.iso.org/obp/ui/#search
+# Note: Chile's southern coastline makes plotting the outline near impossible; R  crashes every time 
+# If you do want to plot outline, write straight to .pdf instead of plotting w/in RStudio
+# Best approach seems to be to crop the extent of hte outline to remove Juan Fernandez Islands
+# Then to crop and mask climate rasters to Peru and Chile
+# THEN to merge these two rasters. 
+peru <- raster::getData('GADM', country = "PER", level = 0) # download country shape  
+chile <- raster::getData('GADM', country = "CHL", level = 0) 
+arg <- raster::getData('GADM', country = "ARG", level = 0)
+bol <- raster::getData('GADM', country = "BOL", level = 0)
+
+extent(chile) # look at the spatial extent (lat, lon) of Chile; compare to map 
+# Chile's extent goes way out into the Pacific because of Juan Fernandez Islands; get rid of these
+extent_mainland <- extent(c(-76, -66.41472, -55.98403,-17.50755)) # Use map to pick a reasonable x min
+chile <- crop(chile, extent_mainland) # this takes ~3-5 mins
+
+# Download surrounding countries for visualization/map-making
+countries <- c("BRA", "ECU", "VEN", "COL", "GUY", "SUR", "PRY", "URY") 
+manycountries <- do.call("bind", lapply(countries, function(x) raster::getData('GADM', country=x, level=0)))
+
+# Merge country polygons 
+southamerica_countries <- merge(peru, chile, arg, bol, manycountries)
+
+
+# ELEVATION DATA
+# Get this once and then read in data below! Takes a long time. 
+# # Note similar weirdness with Chile elevation layer as w/ Chile polygons; namely, Juan Fernandez Islands make extent wonky
+peru_alt <- raster::getData('alt', country = "PER", mask=TRUE) # Peru elev data
+chile_alt <- raster::getData('alt', country = "CHL", mask=TRUE) # Chile elev data; a list of 2
+bol_alt <- raster::getData('alt', country = "BOL", mask=TRUE) # Bolivia elev data
+arg_alt <- raster::getData('alt', country = "ARG", mask=TRUE) # Argentina elev data
+# In Chile alt list: [[1]] = mainland, [[2]] = Juan Fernandez Islands
+chile_alt <- chile_alt[[1]] # Assign mainland Chile to to Chile_alt because that's all I want
+proj4string(peru_alt) <- CRS("+init=epsg:4326")
+proj4string(chile_alt) <- CRS("+init=epsg:4326")
+proj4string(bol_alt) <- CRS("+init=epsg:4326")
+proj4string(arg_alt) <- CRS("+init=epsg:4326")
+writeRaster(peru_alt, "peru_alt.grd", overwrite=TRUE) # Save raster files
+writeRaster(chile_alt, "chile_alt.grd", overwrite=TRUE)
+writeRaster(bol_alt, "bol_alt.grd", overwrite=TRUE)
+writeRaster(arg_alt, "arg_alt.grd", overwrite=TRUE)
+peru_chile_bol_arg_elev <- merge(peru_alt, chile_alt, bol_alt, arg_alt) # Merge country elev layers for map-making
+writeRaster(peru_chile_bol_arg_elev, "peru_chile_bol_arg_elev.grd", overwrite=TRUE)
+
+# # Get elev data for surrounding countries to make your map prettier
+#bol_alt <- raster::getData('alt', country = "BOL", mask=TRUE) # Bolivia elev data
+#arg_alt <- raster::getData('alt', country = "ARG", mask=TRUE) # Argentina elev data
+bra_alt <- raster::getData('alt', country = "BRA", mask=TRUE) # Brazil elev data
+ecu_alt <- raster::getData('alt', country = "ECU", mask=TRUE) # Ecuador elev data
+col_alt <- raster::getData('alt', country = "COL", mask=TRUE) # Colombia elev data
+vez_alt <- raster::getData('alt', country = "VEN", mask=TRUE) # Venezuela elev data
+guy_alt <- raster::getData('alt', country = "GUY", mask=TRUE) # Guyana elev data
+sur_alt <- raster::getData('alt', country = "SUR", mask=TRUE) # Suriname elev data
+pry_alt <- raster::getData('alt', country = "PRY", mask=TRUE) # Paraguay elev data
+uru_alt <- raster::getData('alt', country = "URY", mask=TRUE) # Uruguay elev data
+surrounding_elevs <- merge(bra_alt, ecu_alt, col_alt, vez_alt, guy_alt, sur_alt, pry_alt, uru_alt)
+# Merge elev layers of surrounding countries
+south_america_elevs <- merge(peru_chile_bol_arg_elev, surrounding_elevs) # Merge surrounding countries w/ Chile and Peru
+writeRaster(surrounding_elevs, "surrounding_elevs.grd", overwrite=TRUE) # Save raster files
+writeRaster(south_america_elevs, "south_america_elevs.grd", overwrite=TRUE)
+```
+
+
+# READ IN ELEVATION RASTERS TO AVOID CUMBERSOME RE-PROCESSING
+```{r}
+# Read in all rasters and layers you made above so you can map
+peru_alt <- raster("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/ComparativeHummingbirdBlood/peru_alt.grd") # elevation raster
+chile_alt <- raster("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/ComparativeHummingbirdBlood/chile_alt.grd") # elevation raster
+bol_alt <- raster("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/ComparativeHummingbirdBlood/bol_alt.grd") # elevation raster
+arg_alt <- raster("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/ComparativeHummingbirdBlood/arg_alt.grd") # elevation raster
+surrounding_elevs <- raster("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/ComparativeHummingbirdBlood/surrounding_elevs.grd") 
+# surrounding South American country elevs
+peru_chile_elev <- raster("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/ComparativeHummingbirdBlood/peru_chile_alt.grd") 
+  # Peru + Chile elev raster layer 
+south_america_elevs <- raster("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/ComparativeHummingbirdBlood/south_america_elevs.grd") # All South American country elevs combined
+```
+
+
+# ALL GEO TRACKS MAP OVER CONTINENTAL SOUTH AMERICA 
+Map used in Fig. 1a.
+```{r}
+# Split each bird's tracks by spring fall; a little clunky, but this facilitates plotting solid and dashed lines 
+# Remember southern hemisphere is opposite! Fall migration is March; spring migration is September.
+# Look at each bird, figure out where they reach lowest latitude, then split into fall/spring by dates 
+# Since estimated stationary periods are fewer than raw tracks AND since we removed 2 weeks of error-prone data around 
+# equinoxes, some critical points are missing (i.e., line no "stationary periods" for BJ090 between Chile and southern
+# Peru, so plotting BJ090.stationary makes it look like this bird skipped Argentina and Bolivia when it didn't). To 
+# avoid this, we want to plot segments from our .coords.all datasets (although this means the data will be a bit noisier).
+BJ085.all.fall <- BJ085.coords.all %>% filter(time < as.POSIXct("2018-08-20"))
+BJ085.all.spring <- BJ085.coords.all %>% filter(time >= as.POSIXct("2018-08-20"))
+BJ090.all.fall <- BJ090.coords.all %>% filter(time < as.POSIXct("2018-08-28"))
+BJ090.all.spring <- BJ090.coords.all %>% filter(time >= as.POSIXct("2018-08-28"))
+BJ090.all.fall <- BJ090.coords.all %>% filter(time < as.POSIXct("2018-08-28"))
+BJ090.all.spring <- BJ090.coords.all %>% filter(time >= as.POSIXct("2018-08-28"))
+BJ091.all.fall <- BJ091.coords.all %>% filter(time < as.POSIXct("2018-08-27"))
+BJ091.all.spring <- BJ091.coords.all %>% filter(time >= as.POSIXct("2018-08-27"))
+BJ104.all.fall <- BJ104.coords.all %>% filter(time < as.POSIXct("2018-09-05")) # Need all data bc no data after May 4 stat
+BJ104.all.spring <- BJ104.coords.all %>% filter(time >= as.POSIXct("2018-09-05"))
+BJ105.all.fall <- BJ105.coords.all %>% filter(time < as.POSIXct("2018-08-05"))
+BJ105.all.spring <- BJ105.coords.all %>% filter(time >= as.POSIXct("2018-08-05"))
+BJ112.all.fall <- BJ112.coords.all %>% filter(time < as.POSIXct("2018-06-15"))
+BJ112.all.spring <- BJ112.coords.all %>% filter(time >= as.POSIXct("2018-06-15"))
+BC377.all.fall <- BC377.coords.all %>% filter(time < as.POSIXct("2017-08-12"))
+BC377.all.spring <- BC377.coords.all %>% filter(time >= as.POSIXct("2017-08-12"))
+
+
+# MAP: UNCROPPED "NAKED" CONTINENT W/ COLORS BY SEASON (FOR SIMPLICITY) 
+# FYI, NEED TO ADJUST EXTENT ABOVE TO MAKE THIS WORK. Changing -37 to -40 includes all tracks but then it introduces
+# white space to the right-hand side because of the way that things get cropped. 
+pdf("./AllGeos_ElevationMap_SolidAndDashedLines_uncropped_ColorsBySeason_2022-02-25.pdf", useDingbats = F)
+plot(south_america_elevs, col = colorRampPalette(c("grey0","grey99"))(200), cex.axis=1.5) # RUN FOR UNBOUNDED COUNTRIES AND MAKE SURE EXT=EX IS GONE SO THAT YOU HAVE "FREE FLOATING" COUNTRIES
+#plot(south_america_elevs, col = colorRampPalette(c("grey0","grey99"))(200), cex.axis=1.5, ext=ex) # CROPPED 
+#plot(south_america_elevs, col=mako(200), cex.axis=1.5, ext=ex) # VIRIDIS PALETTE, CROPPED
+plot(manycountries, add=TRUE, border = "gray92", lwd = 0.2) # outlines surrounding countries; must be first to "layer"
+#plot(manycountries, add=TRUE, border = "gray28", lwd = 0.5) # outlines surrounding countries; must be first to "layer"
+# plot(peru, add=TRUE, border = "white", lwd = 0.2) # This outlines Peru 
+# plot(chile, add=TRUE, border = "white", lwd = 0.2) # This outlines Peru 
+# plot(bol, add=TRUE, border = "white", lwd = 0.2) # This outlines Bolivia
+# plot(arg, add=TRUE, border = "white", lwd = 0.2) # This outlines Argentina
+#plot(locality.coords, add=TRUE, pch=19, cex=0.8, col="olivedrab1") # olivedrab1 points w/ no outline # doesn't look great
+lines(BJ085.all.fall[,1]~BJ085.all.fall[,2], col="#CC5500", lwd=1.8) 
+lines(BJ090.all.fall[,1]~BJ090.all.fall[,2], col="#CC5500", lwd=1.8) 
+lines(BJ091.all.fall[,1]~BJ091.all.fall[,2], col="#CC5500", lwd=1.8)  
+lines(BJ104.all.fall[,1]~BJ104.all.fall[,2], col="#CC5500", lwd=1.8)  
+lines(BJ105.all.fall[,1]~BJ105.all.fall[,2], col="#CC5500", lwd=1.8) 
+lines(BJ112.all.fall[,1]~BJ112.all.fall[,2], col="#CC5500", lwd=1.8) 
+lines(BC377.all.fall[,1]~BC377.all.fall[,2], col="#CC5500", lwd=1.8)  
+lines(BJ085.all.spring[,1]~BJ085.all.spring[,2], col="#00ff7f", lwd=1.8)
+lines(BJ090.all.spring[,1]~BJ090.all.spring[,2], col="#00ff7f", lwd=1.8)
+lines(BJ091.all.spring[,1]~BJ091.all.spring[,2], col="#00ff7f", lwd=1.8)
+lines(BJ104.all.spring[,1]~BJ104.all.spring[,2], col="#00ff7f", lwd=1.8)
+lines(BJ105.all.spring[,1]~BJ105.all.spring[,2], col="#00ff7f", lwd=1.8)
+lines(BJ112.all.spring[,1]~BJ112.all.spring[,2], col="#00ff7f", lwd=1.8)
+lines(BC377.all.spring[,1]~BC377.all.spring[,2], col="#00ff7f", lwd=1.8) 
+points(x=-71.636, y=-33.348, cex=1.2, pch=24 , bg="white") # Add a white triangle for breeding/deployment site 
+prettymapr::addscalebar(plotepsg = 4326, widthhint=0.20, labelpadin = 0.08, label.cex = 0.8, label.col = "black", pos = "bottomleft")
+dev.off()
+
+# Nice burnt orange "fall" color: #CC5500
+# spring green "spring" color: #00ff7f
+```
+
+
+
+# Make a quick data frame of these summary stats
+Not sure how to pull these from a summary of the summary stats.
+```{r}
+geo <- c("BJ085", "BJ090", "BJ091", "BJ104", "BJ105", "BJ112", "BC377")
+# Ideally you want to get master data file and subset by just these birds, then melt all info together so you have a 
+# full physiological and etc. mini data frame with just these migratns 
+sex <- c("male", "female", "male", "female", "male", "male", "male")
+tagging.mass <- c(25.4,18.3,23.2,17.5,25.8,23.1,24.5)
+days.data <- c(372,365,339,317,337,328,386)
+# begin.spring.migration <- c("2018-09-10", NA,  )
+# beging.spring.migration.quartile <- c("Q50", NA, )
+# So difference between arrival.date (at Alfredo's) and begin.spring.migration is how long Peru to Chile took
+num.twilights <- c(745,711,679,635,675,651,773)
+migration.dist <- c(7867,6773,8335,5457,5750,6086,5780)
+num.stat.periods <- c(11,13,12,6,7,10,9)
+num.stat.periods.greater.than.two.weeks <- c(6,8,4,5,3,7,6)
+start.date <- c("2017-12-02","2018-02-04","2018-02-02","2018-01-28","2018-02-13","2018-02-08", "2017-01-17")
+end.date <- c("2018-12-09", "2019-01-26", "2019-01-07", "2018-12-11", "2019-01-16", "2018-12-30", "2018-02-07")
+breeding.lat <- c(-33.348,-33.348,-33.348,-33.348,-33.348,-33.348,-33.348)
+breeding.lon <- c(-71.636,-71.636,-71.636,-71.636,-71.636,-71.636,-71.636)
+breeding.departure.date <- c("2018-02-11", "2018-03-15", "2018-02-22", "2018-02-24", "2018-02-22", "2018-03-21", "2017-02-05") # Check Arrivals file
+breeding.departure.quartile <- c("Q975", "Q975", "Q975", "Q975", "Q975", "Q975", "Q975")
+
+# To really get a sense for breeding ground arrival dates, you sort of have to compare Arrivals files with stopover files *and* maps
+# Stopover files will tell you when the bird departed the last wintering stopover site for the breeding grounds
+# Arrivals will estimate with higher confidence when the bird WAS back in the same breeding latitude, but I'm noticing that these dates are already
+# well within the breeding period (and likely, FLightR picks up on birds being there because they're stationary on breeding grounds deep into 
+# breeding season). So, best way to estimate breeding ground arrival is to look at Q975 for the last stopover arrival date. 
+breeding.arrival.date <- c("2018-09-26", "2018-11-11", "2018-09-20", "2018-11-22", "2018-11-25", "2018-10-31", "2017-10-05")
+breeding.arrival.quartile <- c("Q975", "Q975", "Q50", "Q50", "Q975", "Q975", "Q975")
+wintering.lat <- c(-9.00,-9.90,-11.25,-11.25 ,-11.70,-11.70,-11.70) # From stopovers (should agree with stationary periods)
+wintering.lon <- c(-76.55696,-76.29442,-75.21019,-75.21019,-74.94253,-74.94253,-74.94253) # From stopovers (should agree with stationary periods)
+arrival.wintering <- c("2018-06-20","2018-06-29","2018-07-27","2018-06-28","2018-05-02","2018-06-16","2017-06-09") # From stopover estimates
+departure.wintering <- c("2018-08-20","2018-08-28","2018-07-27","2018-09-18","2018-08-19","2018-06-16","2017-08-13") # From stopover estimates
+arrival.wintering.quartile <- c("Q975", "Q975", "Q50", "Q975", "Q50", "Q75", "Q975")
+departure.wintering.quartile <- c("Q975", "Q975", "Q975", "Q975", "Q975", "Q975", "Q975")
+
+
+# Make a short summary data frame
+geo.summary <- data.frame(geo, sex, tagging.mass, days.data, start.date, end.date, num.twilights, migration.dist, num.stat.periods, num.stat.periods.greater.than.two.weeks, breeding.lat, breeding.lon, breeding.departure.date, breeding.departure.quartile, breeding.arrival.date, breeding.arrival.quartile, wintering.lat, wintering.lon, arrival.wintering, departure.wintering, arrival.wintering.quartile, departure.wintering.quartile)
+
+# Convert times to local Santiago time 
+geo.summary$departure.date.local <- as.POSIXct(geo.summary$breeding.departure.date, format="%m/%d/%y %H:%M") # convert back to POSIXct format (from forced chr w/ tz)
+#geo.summary$date_time_ <- lubridate::with_tz(daf5$timestamp, tzone="America/Denver") # Convert time zone
+geo.summary$departure.date <- lubridate::with_tz(geo.summary$departure.date, tzone="America/Santiago") # Convert time zone
+attr(as.POSIXlt(geo.summary$departure.date),"tzone") # Verify time zone - important!
+
+
+# Find summary of distance traveled
+min(geo.summary$migration.dist) # Min 5,457 km
+max(geo.summary$migration.dist) # Max 8335 km
+mean(geo.summary$migration.dist) # Mean 6,578.28 km
+
+# Write this out
+#write.csv(geo.summary, "Patagona_GeolocatorData_Summary_2023-12-29.csv")
+```
+
+
+---
+
+
+# Print environment for reproducibility
+```{r}
+sessionInfo() # List of packages and versions in use 
+```
+
+###########
+
+## END 
