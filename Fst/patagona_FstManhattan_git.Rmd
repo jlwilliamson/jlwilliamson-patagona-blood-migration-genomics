@@ -1,0 +1,144 @@
+---
+title: "patagona_FstManhattan"
+author: "Jessie Williamson"
+date: "1/25/2022; last revised 2023-04-11"
+output: html_document
+---
+
+Fst plots from Williamson et al. 2024, giant hummingbirds, *PNAS*. 
+
+# Clear workspace and set WD
+```{R}
+rm(list=ls(all=TRUE)) # clear workspace 
+setwd("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics")
+```
+
+
+# Load packages
+```{r}
+library(adegenet)
+library(ade4)
+library(vcfR)
+library(scales)
+library(parallel)
+library(dplyr)
+library(tibble)
+library(purrr)
+library(viridis)
+
+library(tidyverse)
+library(data.table)
+library(grid)
+library(gridExtra)
+
+#install.packages("qqman", dep=T)
+library(qqman)
+library(tidyverse)
+#setwd("D:/Documents/Projects/PachyHybrid/fst_plot/fst_out")
+```
+
+---
+
+# Load Fst Plot/Manhattan Plot function (from qqman)
+```{r}
+plot_fst <- function(input, title_name){
+  fst <- read.table(input, header=TRUE)
+  fstsubset <- fst[complete.cases(fst),]
+  SNP <- c(1:(nrow(fstsubset)))
+  snp_df <- data.frame(SNP,fstsubset)
+  #manhattan(snp_df,chr="CHROM",bp="POS",p="WEIR_AND_COCKERHAM_FST",snp="SNP",logp=FALSE, ylab="Weir and Cockerham Fst", main=title_name, xlim=c(0,80000000))
+  manhattan(snp_df,chr="CHROM",bp="BIN_START",p="WEIGHTED_FST",snp="SNP",logp=FALSE, ylab="Weir and Cockerham Fst", main=title_name)
+}
+```
+
+
+# Load in data 
+```{r}
+# Read in input as table
+# assign to variable fst
+# subset to only keep values w/ fst in them
+# array of SNPs 
+# check mol ecol blog about this function qqman
+# make snp array; make data frame from fst subset and fst snps
+# 
+
+# read in genome-wide fst file - april 2023
+fst.10k <- read_tsv("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/windowed_fst/sample_list_northern_sample_list_southern_No279003_weir_window10k_2023-04-11.fst")
+
+fst.50k <- read_tsv("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/windowed_fst/sample_list_northern_sample_list_southern_No279003_weir_window50k_2023-04-11.fst")
+```
+
+
+
+-----
+
+# Manhattan Plots/Fst Comparison - Quick n dirty 
+```{r}
+# Super quick and dirty crappy looking Manhattan plots
+par(mfrow=c(1,1), mar=c(2,1,2,1), oma=c(0,2,0,0))
+# input fst file and plot title
+plot_fst("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/windowed_fst/sample_list_northern_sample_list_southern_No279003_weir_window10k_2023-04-11.fst", "Northern vs. Southern")
+
+par(mfrow=c(1,1), mar=c(2,1,2,1), oma=c(0,2,0,0))
+# input fst file and plot title
+plot_fst("/Users/Jessie/MSBbirds Dropbox/Jessie Williamson/Rdirectory/Patagona/Genomics/windowed_fst/sample_list_northern_sample_list_southern_No279003_weir_window50k_2023-04-11.fst", "Northern vs. Southern")
+```
+
+
+
+########### FST MANHATTAN PLOT ###########
+
+# Nice Manhattan Plots 
+
+IMPORTANT NOTE!!!! 4/19/22: REMEMBER WHEN PLOTTING THAT QQMAN CHROMOSOME "NUMBERS" ARE HUMAN-READABLE NUMBERS AND NOT ACTUAL CHROMOSOME POSITIONS! FOR THE CONVERSTAION WE MADE, AND TO MATCH QQMAN NUMBERS WITH ACTUAL  CHROMOSOMES, SEE THE FILE: "fst_northvssouth_comparisonGenBank_and_ManhattanPlot_order.xlsx". 
+```{r}
+# Code for making a pretty Manhattan plot
+# The last part of this manhattan() function, is just the last function in qqman's thing above
+
+## merge VCF output with file to rename chromosomes for qqman
+# fst_50kwindow_plot <- merge(FST_RY_25kb, chr_rename, by="CHROM")
+# FST_RY_25kb_plot <- FST_RY_25kb_plot[order(FST_RY_25kb_plot$CHR, FST_RY_25kb_plot$BIN_START),]
+
+## plot colors
+colors <- c("#000000", "#7a7a7a", "#adadad") # Can also just choose two to alternate between
+#phylo_timescale_colors <- c("#313232", "#666666", "#999999") 
+two_colors <- c("#000000", "#adadad") # Can also just choose two to alternate between
+
+# rename CHROM to "CHR" for this to work
+# I'm still not exactly sure why this is...but just do it. 
+names(fst.10k)[1] <- "CHR"
+names(fst.50k)[1] <- "CHR" 
+
+## remove small scaffolds that aren't annotated 
+fst.10k.sub <- filter(fst.10k, CHR <= 32)
+fst.50k.sub <- filter(fst.50k, CHR <= 32)
+
+#fst_sub <- fst_sub[order(fst_sub$CHR, fst_sub$BIN_START),] # this is what stepfanie did to reorder but it isn't working
+
+# Plot pairwise Fst between north and south (50K WINDOWS)
+# THIS IS PLOT YOU'RE CURRENTLY USING IN FIGURE 2H IN THE PAPER
+## NOTE THAT YOU TWEAK A LOT OF AESTHETICS IN ILLUSTRATOR
+pdf("./ManhattanPlot_Fst_NorthernVsSouthern_Window50k_2023-04-11.pdf", useDingbats=F, width=14, height=3.5)
+manhattan(fst.50k.sub, chr="CHR", bp="BIN_START", p="WEIGHTED_FST", snp="N_VARIANTS", logp=FALSE, genomewideline=FALSE, ylab="FST", xlab="Chromosome", cex=0.3, col=two_colors) # main="Northern vs. Southern", (removed title for plotting)
+dev.off()
+
+# Plot pairwise Fst between north and south (10K WINDOWS)
+# In these plots, use col=colors for just colors and col=alpha(colors, 0.5)) to adjust alpha
+pdf("./ManhattanPlot_Fst_NorthernVsSouthern_Window10k_2023-04-11.pdf", useDingbats=F, width=14, height=3.5)
+manhattan(fst.10k.sub, chr="CHR", bp="BIN_START", p="WEIGHTED_FST", snp="N_VARIANTS", logp=FALSE, genomewideline=FALSE, ylab="FST", xlab="Chromosome Position", cex=0.3, col=alpha(phylo_timescale_colors, 0.5)) # main="Northern vs. Southern", (removed title for plotting)
+dev.off()
+```
+
+Plot was read into Illustrator, aesthetics and fonts were tweaked, and I added the line at mean of Fst = 0.61. 
+
+---
+
+
+# Print environment for reproducibility
+```{r}
+sessionInfo() # List of packages and versions in use 
+```
+
+###########
+
+## END 
