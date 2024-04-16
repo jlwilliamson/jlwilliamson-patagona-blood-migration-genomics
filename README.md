@@ -1,6 +1,6 @@
 # patagona-blood-migration-genomics
 
-## Williamson et al. 2024, Extreme elevational migration spurred cryptic speciation in giant hummingbirds, PNAS (DOI: 10.5281/zenodo.10975589)
+## Williamson et al. 2024, Extreme elevational migration spurred cryptic speciation in giant hummingbirds, PNAS (https://doi.org/10.5281/zenodo.10975589)
 
 Last updated: 2024-04-15
 
@@ -9,7 +9,7 @@ Last updated: 2024-04-15
 *Migration data are uploaded to MoveBank (Project ID: 3594892529). 
 *Code and scripts are in this GitHub repository (DOI: 10.5281/zenodo.10975589). 
 *Raw genomes and UCE fastq files are on SRA [BIOPROJECT]. 
-*Other raw data are archived on Dryad: [LINK]. 
+*Other raw data are archived on Dryad: (https://doi.org/10.5061/dryad.44j0zpcnp)
 
 This repository contains scripts and code used in a study of latitudinal and elevational migration, blood physiology, morphology, and genomics of giant hummingbirds (*Patagona spp.*) in South America. In our paper, we report the world's longest hummingbird migration with the most extreme elevational shift, and describe the world's largest hummingbird species, a distinct species that was previously undescribed. Field sampling spanned Chile to Peru and involved collaborative teams from the Museum of Southwestern Biology at the University of New Mexico, Centro de Ornitología y Biodiversidad (CORBIDI), and Pontificia Universidad Católica de Chile. 
 
