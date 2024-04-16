@@ -22,7 +22,7 @@ This project would not have been possible without the tremendous efforts of muse
 
 ## SUBFOLDERS 
 
-**migration:**
+**migration:**\n
 `geo_analysis_FLightR_git.Rmd`: Script to analyze raw geolocator data (on MoveBank) using FLightR. Produce some diagnostics and plots. With a few exceptions, this follows online vignettes pretty closely. Patagona distribution shapefile is freely available from BirdLife. 
 
 `patagona_migration_analysis_git.Rmd`: Some post-processing of geolocator tracks to crunch summary metrics and make plots (e.g., Fig. 1a).
