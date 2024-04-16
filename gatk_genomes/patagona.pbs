@@ -1,0 +1,368 @@
+#!/bin/bash
+
+#PBS -q normal
+#PBS -l nodes=1:ppn=8
+#PBS -l walltime=48:00:00
+#PBS -N patagona
+#PBS -m ae
+#PBS -M williamson@unm.edu
+
+#module load miniconda3-4.7.12.1-gcc-4.8.5-lmtvtik
+#module load parallel-20170322-gcc-4.8.5-2ycpx7e
+module load miniconda3/4.10.3-an4v
+module load parallel/20210922-cfec
+source activate gatk-env
+source $(which env_parallel.bash)
+
+src=$PBS_O_WORKDIR
+reference=${src}/reference/ANHU_reference
+
+### INDEX REFERENCE  
+## brief, only need to do once
+#bwa index -p $reference ${reference}.fna
+#samtools faidx ${reference}.fna -o ${reference}.fna.fai
+#picard CreateSequenceDictionary \
+#       R=${reference}.fna \
+#       O=${reference}.dict
+
+### TRIMMING SECTION 
+## only need to do once
+## assumes you have the trimmomatic fasta in your ref folder
+#adapters=$src/reference/TruSeq3-PE.fa
+#cat $src/sample_list | env_parallel --sshloginfile $PBS_NODEFILE \
+#echo    'read1=$src/raw_reads/{}_R1_001.fastq.gz
+#    read2=$src/raw_reads/{}_R2_001.fastq.gz
+#    paired_r1=$src/clean_reads/{}_paired_R1.fastq.gz
+#    paired_r2=$src/clean_reads/{}_paired_R2.fastq.gz
+     unpaired_r1=$src/clean_reads/{}_unpaired_R1.fastq.gz
+#    unpaired_r2=$src/clean_reads/{}_unpaired_R2.fastq.gz
+    ## the minimum read length accepted, we do the liberal 30bp here
+#    min_length=30
+#    trimmomatic PE -threads 1 \
+#	$read1 $read2 $paired_r1 $unpaired_r1 $paired_r2 $unpaired_r2 \
+#	ILLUMINACLIP:${adapters}:2:30:10:2:keepBothReads \
+#	LEADING:3 TRAILING:3 MINLEN:${min_length}'
+
+### SECTION FOR ALIGNMENT AND MARKING DUPLICATES 
+## Note we parallelize such that BWA uses exactly one node.
+## Then, we have a number of jobs equal to the number of nodes requested.
+## MarkDuplicates can take a while depending on the reference and number of reads
+## you may need to break it into steps for certain files
+## Jessie & Ethan modified lines MarkDuplicates to speed up processing on 12/14/21; definitely helped
+## Make sure you remove any bam.parts directories already written before running the gatk code chunk
+## or this won't work; also note: seemed faster when each bird had its own directory (as is written
+## now) vs when all birds were dumped into the same massive directory
+#cat $src/sample_list_sams2021-12-20_last7 | env_parallel -j 1 --sshloginfile $PBS_NODEFILE \
+    '#bwa mem \
+#    	 -t 8 -M \
+#	 -R "@RG\tID:{}\tPL:ILLUMINA\tLB:{}\tSM:{}" \
+#	 $reference \
+#	 $src/clean_reads/{}_paired_R1.fastq.gz \
+#	 $src/clean_reads/{}_paired_R2.fastq.gz \
+#	 > $src/alignments/{}.sam
+#     mkdir $src/alignments/dedup_temp/{}
+#     mkdir $src/alignments/dedup_temp/spark/{}
+#     gatk --java-options "-Xmx44g" MarkDuplicatesSpark \
+#	 -I $src/alignments/{}.sam \
+#	 --tmp-dir $src/alignments/dedup_temp/{} \
+#	 --conf "spark.local.dir=$src/alignments/dedup_temp/spark/{}" \
+#	 --spark-master local[*] \
+#	 --verbosity ERROR \
+#	 -O $src/bams/{}_dedup.bam
+#    rm $src/alignments/{}.sam'
+
+### COLLECTING METRICS IN PARALLEL, commented out
+## Remember to change from _recal to _dedup if you can’t do base recalibration.
+## Also, depth will take A LOT of room up, 
+## so you may not want to run it until you know what to do with it. 
+#cat $src/sample_list | env_parallel --sshloginfile $PBS_NODEFILE \
+# echo   'picard CollectAlignmentSummaryMetrics \
+#    	    R=${reference}.fna \
+#	    I=$src/bams/{}_dedup.bam \
+#	    O=$src/alignments/alignment_summary/{}_alignment_summary.txt
+ #    picard CollectInsertSizeMetrics \
+ #   	    INPUT=$src/bams/{}_dedup.bam \
+#	    OUTPUT=$src/alignments/insert_metrics/{}_insert_size.txt \
+#	    HISTOGRAM_FILE=$src/alignments/insert_metrics/{}_insert_hist.pdf
+#     samtools depth \
+#   	    -a $src/bams/{}_dedup.bam \
+#           > $src/alignments/depth/{}_depth.txt'
+
+### SCATTER-GATHER HAPLOTYPE CALLER
+## probably the most likely to need checkpoints.
+## This can take a lot of different forms, this one is best for large files.
+## Note that if the job terminates early, you have to redo the whole sample with this set up
+## That shouldn't be too big of a problem, tho
+
+#cut -f 1 ${reference}.fna.fai > $src/intervals.list
+
+#env_parallel --sshloginfile $PBS_NODEFILE \
+#      'mkdir ${src}/gvcfs/{1}
+#      gatk --java-options "-Xmx6g" HaplotypeCaller \
+#           -R ${reference}.fna \
+#	   -I $src/bams/{1}_dedup.bam \
+#	   -O $src/gvcfs/{1}/{1}_{2}_raw.g.vcf.gz \
+#	   -L {2} \
+#	   -ERC GVCF' ::: $(cat $src/sample_list_temp2) ::: $(cat $src/intervals.list)
+
+# Good practice	to deactivate current environment
+#conda deactivate    
+
+# Now activate "new" GATK environment (which is	actually older gatk3 that supports Unified Genotyper)
+#source activate gatk3-env
+
+## START OF UNIFIED GENOTYPER CODE (used instead of HaplotypeCaller for speed/efficiency)
+## INDEL REALIGNER TARGET CREATOR
+# Start by finding indels and re-aligning
+# Per individual; because of this, each uses 1 core. Only want number of cores equal to what we have
+# So 5 nodes, 8 cores per node 
+# Next code block is per interval
+# Flag -T is unique to gatk, means "tool"; dont' need to specify java as before  
+#cat $src/sample_just_159729 | env_parallel --sshloginfile $PBS_NODEFILE \
+#    'gatk -Xmx5g -T RealignerTargetCreator -R ${reference}.fna \
+#          -I $src/bams/{}_dedup.bam \
+#          -o $src/bams/{}_realign.intervals
+#     gatk -Xmx5g -T IndelRealigner -R ${reference}.fna \
+#          -targetIntervals $src/bams/{}_realign.intervals \
+#          -I $src/bams/{}_dedup.bam \
+#          -o $src/bams/{}_realign.bam'
+
+## similar to step below in genomicsdb import with interval_list=""
+## says: get every bam file we have and put them together; string of -I; prevents manually writing many lines
+#bam_list=""
+
+#while read sample; do
+#    bam_list="${bam_list}-I ${src}/bams/${sample}_realign.bam "
+#done < $src/sample_list
+
+## ACTUALLY UNIFIED GENOTYPER but w/ interval call instead of samples 
+## -glm is genotype likelihood model; EFG thinks optional but good to include; ploidy = diploid (also optional)
+## basically same out at genotype GVCFS; one interaval, all indivs
+## each output is one interval for all indivs (-L = interval list) BUT w/ parallel, ultimately, output is 
+## all intervals and all individuals 
+#cat $src/intervals.list | env_parallel -j 1 --sshloginfile $PBS_NODEFILE \
+#    'gatk -Xmx40g -T UnifiedGenotyper -R ${reference}.fna \
+#          ${bam_list} \
+#          -ploidy 2 -glm SNP \
+#          -L {} \
+#          -o $src/combined_vcfs/intervals/{}_genotyped.vcf.gz'
+
+## Now deactivate gatk3
+#conda deactivate 
+
+# activate gatk4 enviro (what we want for rest of analyses)
+#source activate gatk-env
+
+## note: if running Unified Genotyper, do NOT need Genomicsdbimport and genotypGVCFS since already done 
+### RUN GENOMICSDBIMPORT for all samples
+## This runs it scatter-gather
+## the path to each interval (genomics_databases/{interval}) must be empty
+#cat $src/intervals.list | env_parallel --sshloginfile $PBS_NODEFILE \
+#    'mkdir $src/gendb_temp/{}
+#    interval_list=""
+#    # loop to generate list of sample-specific intervals to combine
+#    while read sample; do
+#          interval_list="${interval_list}-V ${src}/gvcfs/${sample}/${sample}_{}_raw.g.vcf.gz "
+#          done < $src/sample_list
+#    gatk --java-options "-Xmx6g" GenomicsDBImport \
+#         ${interval_list} \
+#         --genomicsdb-workspace-path $src/genomics_databases/{} \
+#         --tmp-dir $src/gendb_temp/{} \
+#         -L {}'
+
+### Run GenotypeGVCFs on each interval GVCF
+#cat $src/intervals.list | env_parallel --sshloginfile $PBS_NODEFILE \
+#    'gatk --java-options "-Xmx6g" GenotypeGVCFs \
+#    	  -R ${reference}.fna \
+#	  -V gendb://$src/genomics_databases/{} \
+#	  -O $src/combined_vcfs/intervals/{}_genotyped.vcf.gz'
+
+## This point onward doesn't use parallel
+## Best practice would be to stop here and restart with a single node
+
+## Make a file with a list of paths for GatherVcfs to use
+## Overwrite gather list from before; but now, spit out path to file; output = text file w/ new line for 
+## every interval we're combining 
+#> $src/combined_vcfs/gather_list
+#while read interval; do
+#      echo ${src}/combined_vcfs/intervals/${interval}_genotyped.vcf.gz >> \
+#      $src/combined_vcfs/gather_list
+#done < $src/intervals.list
+
+## Run GatherVcfs
+#gatk GatherVcfs \
+#     -I $src/combined_vcfs/gather_list \
+#     -O $src/combined_vcfs/combined_vcf.vcf.gz
+
+## Index the gathered VCF
+## gather VCF doesn't automatically index, so we do it here 
+#gatk IndexFeatureFile \
+#     -I $src/combined_vcfs/combined_vcf.vcf.gz
+
+## Select and filter variants
+## Saying: we have called variants (SNPs and indels); take SNPS, put in one file, then take indels and put them
+## in another file
+## can look inside combined_vcfs folder; can compare indel and SNP file sizes, roughly match combined_vcf
+## Select SNPS
+#gatk SelectVariants \
+#     -R ${reference}.fna \
+#     -V $src/combined_vcfs/combined_vcf.vcf.gz \
+#     -select-type SNP \
+#     -O $src/combined_vcfs/raw_snps.vcf.gz
+
+## Select indels
+#gatk SelectVariants \
+#     -R ${reference}.fna \
+#     -V $src/combined_vcfs/combined_vcf.vcf.gz \
+#     -select-type INDEL \
+#     -O $src/combined_vcfs/raw_indel.vcf.gz
+
+## Filtering step
+## DP is depth of coverage
+## QD is quality by depth; EFG says 2 is standard
+#gatk VariantFiltration \
+#     -R ${reference}.fna \
+#     -V $src/combined_vcfs/raw_snps.vcf.gz \
+#     -O $src/analysis_vcfs/filtered_snps.vcf  \
+#     -filter "DP < 4" --filter-name "DP_filter" \
+#     -filter "QUAL < 30.0" --filter-name "Q_filter" \
+#     -filter "QD < 2.0" --filter-name "QD_filter" \
+#     -filter "FS > 60.0" --filter-name "FS_filter" \
+#     -filter "MQ < 40.0" --filter-name "MQ_filter"
+
+## VCFTOOLS FILTER TO PRODUCE FINAL ANALYSIS VCF
+## mac = don't want singleton on one chromosome
+## min-meanDP = min depth for a site NOT individual (determine based in estimates in idepth file)
+## not-chr flag means exclude W chromosome (NC_044276.1); which we want so we don't get weird alignment issues for males
+## Can  circle back later and get W chromosome info for females
+
+# Make a 75% complete matrix file
+#vcftools --vcf $src/analysis_vcfs/filtered_snps.vcf --out $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_75complete_2023-04-03 \
+#	--not-chr NC_044276.1 \
+#	--remove-indels \
+#	--remove-filtered-all \
+#	--min-alleles 2 \
+#	--max-alleles 2 \
+#	--mac 2 \
+#	--min-meanDP 6 \
+#	--max-missing .75 \
+#	--thin 10000 \
+#	--recode
+#mv $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_75complete_2023-04-03.recode.vcf $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_75complete_2023-04-03.vcf
+
+# Make a 75% complete matrix file
+#vcftools --vcf $src/analysis_vcfs/filtered_snps.vcf --out $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_75complete_WithWChromosome_2023-04-04 \
+#	--remove-indels \
+#	--remove-filtered-all \
+#	--min-alleles 2 \
+#	--max-alleles 2 \
+#	--mac 2 \
+#	--min-meanDP 6 \
+#	--max-missing .75 \
+#	--thin 10000 \
+#	--recode
+#mv $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_75complete_WithWChromosome_2023-04-04.recode.vcf $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_75complete_WithWChromosome_2023-04-04.vcf
+
+## Make a 75% complete matrix with no W chromosome and no NK279003
+#vcftools --vcf $src/analysis_vcfs/filtered_snps.vcf --out $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_75complete_NoWChromosome_NoNK279003_2023-04-04 \
+#        --keep sample_list_NToS_NoNK279003 \
+#        --not-chr NC_044276.1 \
+#        --remove-indels \
+#        --remove-filtered-all \
+#        --min-alleles 2 \
+#        --max-alleles 2 \
+#        --mac 2 \
+#        --min-meanDP 6 \
+#        --max-missing .75 \
+#        --thin 10000 \
+#        --recode
+#mv $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_75complete_NoWChromosome_NoNK279003_2023-04-04.recode.vcf $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_75complete_NoWChromosome_NoNK279003_2023-04-04.vcf
+
+
+## Now make a 95% complete matrix
+#vcftools --vcf $src/analysis_vcfs/filtered_snps.vcf --out $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_95complete_2023-04-03 \
+#	--not-chr NC_044276.1 \
+#	--remove-indels \
+#	--remove-filtered-all \
+#	--min-alleles 2 \
+#	--max-alleles 2 \
+#	--mac 2 \
+#	--min-meanDP 6 \
+#	--max-missing .95 \
+#	--thin 10000 \
+#	--recode
+#mv $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_95complete_2023-04-03.recode.vcf $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_95complete_2023-04-03.vcf
+
+## Make a 95% complete matrix with no W chromosome and no NK279003
+vcftools --vcf $src/analysis_vcfs/filtered_snps.vcf --out $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_95complete_NoWChromosome_NoNK279003_2023-04-04 \
+        --keep sample_list_NToS_NoNK279003 \
+        --not-chr NC_044276.1 \
+        --remove-indels \
+        --remove-filtered-all \
+        --min-alleles 2 \
+        --max-alleles 2 \
+        --mac 2 \
+        --min-meanDP 6 \
+        --max-missing .95 \
+        --thin 10000 \
+        --recode
+mv $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_95complete_NoWChromosome_NoNK279003_2023-04-04.recode.vcf $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_95complete_NoWChromosome_NoNK279003_2023-04-04.vcf
+
+
+
+## Now make a 100% complete matrix
+## Note that you exlude the W chromosome.
+#vcftools --vcf $src/analysis_vcfs/filtered_snps.vcf --out $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_100complete_2023-04-03 \
+#	--not-chr NC_044276.1 \
+#       --remove-indels \
+#	--remove-filtered-all \
+#       --min-alleles 2 \
+#	--max-alleles 2 \
+#	--mac 2 \
+#       --min-meanDP 6 \
+#	--max-missing 1 \
+#	--thin 10000 \
+#	--recode
+#mv $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_100complete_2023-04-03.recode.vcf $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_100complete_2023-04-03.vcf
+
+## Now make a 100% complete matrix
+## Note that you exlude the W chromosome.
+#vcftools --vcf $src/analysis_vcfs/filtered_snps.vcf --out $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04 \
+#	--keep sample_list_NToS_NoNK279003 \
+#	--not-chr NC_044276.1 \
+#	--remove-indels \
+#	--remove-filtered-all \
+#	--min-alleles 2 \
+#	--max-alleles 2 \
+#	--mac 2 \
+#	--min-meanDP 6 \
+#	--max-missing 1 \
+#	--thin 10000 \
+#	--recode
+#mv $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04.recode.vcf $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_NoNK279003_2023-04-04.vcf
+
+
+## Now make a 100% complete matrix for sNMF with min-meanDP10
+## Note that you exlude the W chromosome.
+#vcftools --vcf $src/analysis_vcfs/filtered_snps.vcf --out $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_minmeanDP10_2023-04-03 \
+#	--not-chr NC_044276.1 \
+#	--remove-indels \
+#	--remove-filtered-all \
+#	--min-alleles 2 \
+#	--max-alleles 2 \
+#	--mac 2 \
+#	--min-meanDP 10 \
+#	--max-missing 1 \
+#	--thin 10000 \
+#	--recode
+#mv $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_minmeanDP10_2023-04-03.recode.vcf $src/analysis_vcfs/patagona_genomes_vcftoolsfilter_10kthin_100complete_NoWChromosome_minmeanDP10_2023-04-03.vcf
+
+
+## Now, two Chilean birds stick out on the far right-hand side of the plot together; to rule out the possibility that they're related, we're going to drop one, 
+## remake VCF, and replot
+#vcftools --vcf $src/analysis_vcfs/filtered_snps.vcf --out $src/analysis_vcfs/patagona_southern_75complete_10kthin_No279003 \
+#        --remove-indels --remove-filtered-all \
+#        --min-alleles 2 --max-alleles 2 --mac 2 \
+#        --min-meanDP 10 --max-missing .75 --thin 10000 --recode \
+#	--keep sample_list_southern_No279003
+#mv $src/analysis_vcfs/patagona_southern_75complete_10kthin_No279003.recode.vcf $src/analysis_vcfs/patagona_southern_75complete_10kthin_No279003.vcf
