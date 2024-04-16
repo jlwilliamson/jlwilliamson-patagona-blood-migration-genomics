@@ -1,0 +1,26 @@
+#!/bin/bash
+
+#PBS -q normal
+#PBS -l nodes=1:ppn=8
+#PBS -l walltime=48:00:00
+#PBS -N patagona-illumi
+#PBS -m ae
+#PBS -M williamson@unm.edu
+
+## Script to clean UCE reads with illumiprocessor 
+
+## Activate environment set up for UCEs
+## remember NEED eval conda shell bash hook line BEFORE conda activate env line
+eval "$(conda shell.bash hook)"
+conda activate uce-env
+
+## Run illumiprocessor to clean reads 
+illumiprocessor \
+	--input /users/jlwill/wheeler-scratch/patagona/UCE/raw_reads \
+	--output /users/jlwill/wheeler-scratch/patagona/UCE/clean_reads \
+	--config patagona_illumiprocessor_samples_adapters.txt \
+	--log-path /users/jlwill/wheeler-scratch/patagona/UCE/logs \
+	--cores 8 \
+	--r1-pattern _R1 \
+	--r2-pattern _R2
+
