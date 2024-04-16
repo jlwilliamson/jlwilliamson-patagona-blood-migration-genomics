@@ -1,10 +1,9 @@
 # patagona-blood-migration-genomics
 
-## Williamson et al. 2024, Extreme elevational migration spurred cryptic speciation in giant hummingbirds, PNAS (DOI: 10.5281/zenodo.10975589)
+## Williamson et al. 2024, Extreme elevational migration spurred cryptic speciation in giant hummingbirds, *PNAS* 
+##(DOI: 10.5281/zenodo.10975589)
 
 Last updated: 2024-04-15
-
-DOI: 10.5281/zenodo.10975589
 
 **Other places data are archived**
 All raw specimen data are accessioned in Arctos (www.arctosdb.org)
