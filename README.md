@@ -29,14 +29,17 @@ This project would not have been possible without the tremendous efforts of muse
 
 `PTT_track_analysis_git.Rmd`: Analysis of PTT data from the one good devie (raw data on MoveBank), including Douglas Argos Filtering (DAF) within the MoveBank interface. Script cleans and analyzes data, crunches summary and other metrics, and includes code for some plots. 
 
+-------
 
 **blood**:
 `Patagona_blood_analysis_git.Rmd`: Analysis of blood data collected from wild-caught and specimen-vouchered hummingbirds. All raw data is linked to vouchered specimens at the Museum of Southwestern Biology, other data on Dryad. 
 
+-------
 
 **morpho**:
 `Patagona_morpho_analysis_git.Rmd`: Analysis of morphological data collected from wild-caught and specimen-vouchered hummingbirds spanning 154 years. All specimen measurements were taken by JLW. All measurements are linked to vouchered specimens at the museums listed above, data on Dryad.
 
+-------
 
 **gatk_genomes**:
 Files for processing WGS data. 
