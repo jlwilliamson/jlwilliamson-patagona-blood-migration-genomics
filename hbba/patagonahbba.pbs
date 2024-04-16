@@ -1,0 +1,62 @@
+#!/bin/bash
+
+#PBS -q normal
+#PBS -l nodes=4:ppn=8
+#PBS -l walltime=48:00:00
+#PBS -N patagona-hbba
+#PBS -m ae
+#PBS -M williamson@unm.edu
+
+#cd $SLURM_SUBMIT_DIR
+## if using PBS, 'cd $PBS_O_WORKDIR'
+cd $PBS_O_WORKDIR
+module load miniconda3/4.10.3-an4v
+module load parallel/20210922-cfec
+eval "$(conda shell.bash hook)"
+conda activate bcftools-env
+source $(which env_parallel.bash)
+
+## This script rips beta-globin gene, hbba, from whole genomes and writes them out to a collated fasta file with all hbba sequences
+## samtools -b says output bam
+## -F flag 4 says ignore code of 4 for unmapped reads; good since most reads unmapped becuase hbba is tiny
+## then output to bam, sort
+## run primitive GATK version, mpileup to call variants
+## generate consensus, fasta onto ref, take consensus
+## then change names and get complete, collated fasta file
+
+## Align with BWA
+## When assigning variable with an absolute path, don't use $
+src=$PBS_O_WORKDIR
+reference=${src}/reference-hbba/Hbba_reference_NK163391_KF222529.1
+
+> /users/jlwill/wheeler-scratch/patagona/hbba/output/patagona_hbba_combined_consensus_FromGenomes.fasta
+
+## assuming you have 8 threads, not that this .sam file will be huge, and we'll remove it at the end
+cat $PBS_O_WORKDIR/sample_list_hbba | env_parallel -j 1 --sshloginfile $PBS_NODEFILE \
+    'bwa mem \
+        -t 8 \
+        $reference \
+        /users/jlwill/wheeler-scratch/patagona/clean_reads/{}_paired_R1.fastq.gz \
+        /users/jlwill/wheeler-scratch/patagona/clean_reads/{}_paired_R2.fastq.gz \
+        | samtools view -b -F 4 - > /users/jlwill/wheeler-scratch/patagona/hbba/bams-hbba/{}_unsort_hbba.bam
+
+## sort the .bam file
+     picard SortSam I=/users/jlwill/wheeler-scratch/patagona/hbba/bams-hbba/{}_unsort_hbba.bam \
+     O=/users/jlwill/wheeler-scratch/patagona/hbba/bams-hbba/{}_sort_hbba.bam SORT_ORDER=coordinate
+
+## remove old files, comment out if you want to keep them to troubleshoot
+#rm unsorted_alignment.bam
+
+## pipeline combining bcftool's mpileup and call using 8 threads, then samtools's vcfutils.pl
+## vcfutuls.pl filters variants with a depth less than 10 or greater than 50, and those with quality score under 30
+## the -c = consensus sequence
+## the echo part 3 lines from bottom is making the name of the fasta sequence that will appear as header of the fasta file 
+bcftools mpileup -Q 30 -q 30 -Ou -f $reference.fasta /users/jlwill/wheeler-scratch/patagona/hbba/bams-hbba/{}_sort_hbba.bam --threads 8 | \
+        bcftools call -mv -Oz --threads 8 -o /users/jlwill/wheeler-scratch/patagona/hbba/bams-hbba/{}_hbba.vcf.gz
+        bcftools index /users/jlwill/wheeler-scratch/patagona/hbba/bams-hbba/{}_hbba.vcf.gz
+        cat ${reference}.fasta | bcftools consensus /users/jlwill/wheeler-scratch/patagona/hbba/bams-hbba/{}_hbba.vcf.gz > \
+        /users/jlwill/wheeler-scratch/patagona/hbba/output/{}_consensus_hbba.fasta
+        echo \>{}_hbba >> /users/jlwill/wheeler-scratch/patagona/hbba/output/patagona_hbba_combined_consensus_FromGenomes.fasta
+        tail -n +2 /users/jlwill/wheeler-scratch/patagona/hbba/output/{}_consensus_hbba.fasta >> /users/jlwill/wheeler-scratch/patagona/hbba/output/patagona_hbba_combined_consensus_FromGenomes.fasta'
+
+
