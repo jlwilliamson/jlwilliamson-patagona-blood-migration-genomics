@@ -1,0 +1,201 @@
+#!/bin/bash
+
+#PBS -q normal
+#PBS -l nodes=1:ppn=8
+#PBS -l walltime=48:00:00
+#PBS -N patagona-seqcap
+#PBS -m ae
+#PBS -M williamson@unm.edu
+
+#cd $SLURM_SUBMIT_DIR
+## if using PBS, 'cd $PBS_O_WORKDIR'
+cd $PBS_O_WORKDIR
+module load miniconda3/4.10.3-an4v
+module load parallel/20210922-cfec
+eval "$(conda shell.bash hook)"
+conda activate uce-env
+source $(which env_parallel.bash)
+
+## Assumes reads are cleaned and have had adapters trimmed with illumiprocessor
+
+## Step 1 is to map contigs to probes (phyluce)
+## Ethan notes that it's better to remove Z loci from contig file but takes a long time and doesn't really make a difference
+## Note that Mike Harvey's script didn't work because it relied on old python dependencies, so using phyluce to do this
+## Reference is output of Spades (consists of 4 individuals)
+#conda activate phyluce-env
+#phyluce_assembly_match_contigs_to_probes \
+#    --contigs /users/jlwill/wheeler-scratch/patagona/UCE/UCE-reference/ \
+#    --probes /users/jlwill/wheeler-scratch/patagona/UCE/uce-5k-probes.fasta \
+#    --output UCE-reference/phyluce_match_output/
+
+#phyluce_assembly_get_match_counts \
+#    --locus-db UCE-reference/phyluce_match_output/probe.matches.sqlite \
+#    --taxon-list-config UCE-reference/set.conf \
+#    --taxon-group 'all' \
+#    --output UCE-reference/matchcounts.conf
+
+#phyluce_assembly_get_fastas_from_match_counts \
+#    --contigs /users/jlwill/wheeler-scratch/patagona/UCE/UCE-reference/ \
+#    --locus-db UCE-reference/phyluce_match_output/probe.matches.sqlite \
+#    --match-count-output UCE-reference/matchcounts.conf \
+#    --output /users/jlwill/wheeler-scratch/patagona/UCE/UCE-reference/UCE_reference_patagona.fasta \
+#    --log-path logs
+
+#conda deactivate
+
+## Align with BWA
+## When assigning variable with an absolute path, don't use $
+src=$PBS_O_WORKDIR
+reference=${src}/UCE-reference/UCE_reference_patagona
+
+## Skip steps 2 to 4 in Ethan's sample script, which are related to z-loci
+
+## index part
+#bwa index -p $reference ${reference}.fasta
+#samtools faidx ${reference}.fasta -o ${reference}.fasta.fai
+#     picard CreateSequenceDictionary \
+#	-R ${reference}.fasta \
+#	-O ${reference}.dict
+
+## Steps 5 to 9
+## Now, we write a loop to map reads to contigs (BWA), convert sam to bam (samtools), clean bams (picard), add read groups (picard)
+## and mark duplicates (picard). Note that we do what we did in ND2 and Hbba pipelines and pipe sam to bam so we never write sams
+## First chunk is bwa mem and convert sam to bam
+## -j 1 means run one job per node
+#cat $PBS_O_WORKDIR/sample_list_seqcap | env_parallel -j 1 --sshloginfile $PBS_NODEFILE \
+#    'bwa mem \
+#        -t 8 -M \
+#        $reference \
+#        /users/jlwill/wheeler-scratch/patagona/UCE/clean_reads/{}-READ1.fastq.gz \
+#        /users/jlwill/wheeler-scratch/patagona/UCE/clean_reads/{}-READ2.fastq.gz \
+#        | samtools view -b -F 4 - > /users/jlwill/wheeler-scratch/patagona/UCE/bams-UCE/{}_unsort_UCE.bam
+
+## sort the bam files (picard, SortSam)
+#     picard SortSam \
+#	-I /users/jlwill/wheeler-scratch/patagona/UCE/bams-UCE/{}_unsort_UCE.bam \
+#     	-O /users/jlwill/wheeler-scratch/patagona/UCE/bams-UCE/{}-aln.bam \
+#	--SORT_ORDER coordinate
+
+## clean bams (picard, CleanSam)
+#     picard CleanSam \
+#	-I /users/jlwill/wheeler-scratch/patagona/UCE/bams-UCE/{}-aln.bam \
+#	-O /users/jlwill/wheeler-scratch/patagona/UCE/bams-UCE/{}-aln_cleaned.bam
+
+## Add read groups (picard)
+#     picard AddOrReplaceReadGroups \
+#	I=/users/jlwill/wheeler-scratch/patagona/UCE/bams-UCE/{}-aln_cleaned.bam \
+#	O=/users/jlwill/wheeler-scratch/patagona/UCE/bams-UCE/{}-aln_rg.bam \
+#	SORT_ORDER=coordinate \
+#	RGPL=illumina \
+#	RGPU=patagona_lane \
+#	RGLB=lib1 \
+#	RGID={} \
+#	RGSM={}
+
+## dedup
+#     picard MarkDuplicates \
+#	I=/users/jlwill/wheeler-scratch/patagona/UCE/bams-UCE/{}-aln_rg.bam \
+#	O=/users/jlwill/wheeler-scratch/patagona/UCE/bams-UCE/{}-aln_dedup.bam \
+#	M=/users/jlwill/wheeler-scratch/patagona/UCE/bams-UCE/picard_marked_dedup_metrics.txt \
+#	MAX_FILE_HANDLES_FOR_READ_ENDS_MAP=1000 \
+#	ASSUME_SORTED=true \
+#	REMOVE_DUPLICATES=false'
+
+## remove old files, comment out if you want to keep them to troubleshoot
+#rm unsorted_alignment.bam
+
+## Step 10, merge bams with a loop
+## Use echo bam_list to verify that the bam list is working properly
+bam_list=""
+
+while read sample; do
+    bam_list="${bam_list}-I /users/jlwill/wheeler-scratch/patagona/UCE/bams-UCE/${sample}-aln_dedup.bam "
+done < /users/jlwill/wheeler-scratch/patagona/UCE/sample_list_seqcap 
+ 
+echo $bam_list
+
+
+## Step 11, merge bams (MergeSams)
+## Remember that bam_list made above is input and because it starts with flag I, don't enter that before calling bam_list
+     picard MergeSamFiles \
+	${bam_list} \
+	-O /users/jlwill/wheeler-scratch/patagona/UCE/bams-merged-UCE/patagona_AllUCE_merged_bams.bam \
+	--SORT_ORDER coordinate \
+	--ASSUME_SORTED true
+
+## Index the merged bams (samtools)
+samtools index /users/jlwill/wheeler-scratch/patagona/UCE/bams-merged-UCE/patagona_AllUCE_merged_bams.bam 
+
+## INDEL REALIGNER TARGET CREATOR (gatk; UnifiedGenotyper)
+## Finds indels and re-aligning
+## Request one node from here on out
+## Flag -T is unique to gatk, means "tool"; dont' need to specify java as before
+     gatk3 -Xmx42g -T RealignerTargetCreator -R ${reference}.fasta \
+	-I $src/bams-merged-UCE/patagona_AllUCE_merged_bams.bam \
+	-o $src/bams-merged-UCE/patagona_AllUCE_merged_bams_realign.intervals
+     gatk3 -Xmx42g -T IndelRealigner -R ${reference}.fasta \
+	-targetIntervals $src/bams-merged-UCE/patagona_AllUCE_merged_bams_realign.intervals \
+	-I $src/bams-merged-UCE/patagona_AllUCE_merged_bams.bam \
+	-o $src/bams-merged-UCE/patagona_AllUCE_RealignedIndels_UseThis.bam
+
+## ACTUALLY UNIFIED GENOTYPER but w/ interval call instead of samples
+## -glm is genotype likelihood model; EFG thinks optional but good to include; ploidy = diploid (also optional)
+## basically same out at genotype GVCFS; one interaval, all indivs
+     gatk3 -Xmx42g -T UnifiedGenotyper -R ${reference}.fasta \
+	-I /users/jlwill/wheeler-scratch/patagona/UCE/bams-merged-UCE/patagona_AllUCE_RealignedIndels_UseThis.bam \
+	-ploidy 2 -gt_mode DISCOVERY \
+	-o $src/vcf_UCE/patagona_allUCE_unfilterd.vcf
+
+## Select and filter variants
+## Saying: we have called variants (SNPs and indels); take SNPS, put in one file, then take indels and put them in another file
+## can look inside combined_vcfs folder; can compare indel and SNP file sizes, roughly match combined_vcf
+## Select SNPS
+     gatk3 -T SelectVariants \
+	-R ${reference}.fasta \
+	-V /users/jlwill/wheeler-scratch/patagona/UCE/vcf_UCE/patagona_allUCE_unfilterd.vcf \
+	-selectType SNP \
+	-o /users/jlwill/wheeler-scratch/patagona/UCE/vcf_UCE/patagona_allUCE_unfiltered_snps.vcf
+
+## Filtering step 1: GATK VARIANTFILTRATION
+## DP is depth of coverage
+## QD is quality by depth; EFG says 2 is standard
+     gatk3 -T VariantFiltration \
+	-R ${reference}.fasta \
+	-V $src/vcf_UCE/patagona_allUCE_unfiltered_snps.vcf \
+	-o $src/analysis_vcfs/patagona_allUCE_gatkfilter.vcf \
+	-filter "QUAL < 30.0" --filterName "Q_filter" \
+	-filter "FS > 60.0" --filterName "FS_filter" \
+	-filter "MQ < 40.0" --filterName "MQ_filter"
+
+## Filtering step 2:  VCFTOOLS FILTER
+## mac = Minor Allele Count; don't want singleton on one chromosome
+## min-meanDP = min depth for a site NOT individual (determine based in estimates in idepth file); excluding for UCEs for now
+## FOR UCES: Will need to adjust this bc of toepads; Start with max missing 90, then try 75
+## Bad news: both 90 percent and 75 percent complete matrices have ZERO SNPs because of toepads. Go down.
+## A 50 percent complete matrix gives us xxxx SNPS
+## A 60 percent complete matrix gives us: 472 SNPs
+## NK159702 isn't a Patagona, so we want to drop it from our matrix. We did this by moving it out of bams folder above, but if elminating here with vcftools use --remove-indv Pgigas_peru_159702   
+     vcftools --vcf $src/analysis_vcfs/patagona_allUCE_gatkfilter.vcf --out $src/analysis_vcfs/patagona_allUCE_vcftoolsfilter_nothin_50complete.vcf \
+	--remove-indels \
+	--remove-filtered-all \
+	--min-alleles 2 \
+	--max-alleles 2 \
+	--mac 2 \
+	--max-missing .50 \
+	--recode
+
+mv /users/jlwill/wheeler-scratch/patagona/UCE/analysis_vcfs/patagona_allUCE_vcftoolsfilter_nothin_50complete.vcf.recode.vcf \
+	/users/jlwill/wheeler-scratch/patagona/UCE/analysis_vcfs/patagona_allUCE_vcftoolsfilter_nothin_50complete.vcf
+
+## Second attempt of getting a VCF with 75 percent complete matrix
+#     vcftools --vcf $src/analysis_vcfs/patagona_allUCE_gatkfilter.vcf --out $src/analysis_vcfs/patagona_allUCE_vcftoolsfilter_nothin_75complete.vcf \
+#        --remove-indels \
+#        --remove-filtered-all \
+#        --min-alleles 2 \
+#        --max-alleles 2 \
+#        --mac 2 \
+#        --max-missing .90 \
+#        --recode
+
+#mv /users/jlwill/wheeler-scratch/patagona/UCE/analysis_vcfs/patagona_allUCE_vcftoolsfilter_nothin_75complete.vcf.recode.vcf /users/jlwill/wheeler-scratch/patagona/UCE/analysis_vcfs/patagona_allUCE_vcftoolsfilter_nothin_75complete.vcf
+
