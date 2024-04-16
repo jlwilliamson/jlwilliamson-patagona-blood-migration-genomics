@@ -5,11 +5,11 @@
 Last updated: 2024-04-15
 
 **Other places data are archived:**
-All raw specimen data are accessioned in Arctos (www.arctosdb.org). 
-Migration data are uploaded to MoveBank (Project ID: 3594892529). 
-Code and scripts are in this GitHub repository (DOI: 10.5281/zenodo.10975589). 
-Raw genomes and UCE fastq files are on SRA [BIOPROJECT]. 
-Other raw data are archived on Dryad: [LINK]. 
+*All raw specimen data are accessioned in Arctos (www.arctosdb.org). 
+*Migration data are uploaded to MoveBank (Project ID: 3594892529). 
+*Code and scripts are in this GitHub repository (DOI: 10.5281/zenodo.10975589). 
+*Raw genomes and UCE fastq files are on SRA [BIOPROJECT]. 
+*Other raw data are archived on Dryad: [LINK]. 
 
 This repository contains scripts and code used in a study of latitudinal and elevational migration, blood physiology, morphology, and genomics of giant hummingbirds (*Patagona spp.*) in South America. In our paper, we report the world's longest hummingbird migration with the most extreme elevational shift, and describe the world's largest hummingbird species, a distinct species that was previously undescribed. Field sampling spanned Chile to Peru and involved collaborative teams from the Museum of Southwestern Biology at the University of New Mexico, Centro de Ornitología y Biodiversidad (CORBIDI), and Pontificia Universidad Católica de Chile. 
 
@@ -20,9 +20,9 @@ This README.md provides a description of data and files. Many .Rmd files include
 This project would not have been possible without the tremendous efforts of museum collectors, past and present, and the devoted curators and collections managers who make natural history museums the gems that they are. I am deeply grateful to the following collections for contributions to this project: Museum of Southwestern Biology, American Museum of Natural History, Centro de Ornitología y Biodiversidad, Cornell University Museum of Vertebrates, Louisiana State University Museum of Natural Science, Florida Museum of Natural History, University of Kansas Biodiversity Institute, Harvard University Museum of Comparative Zoology, Smithsonian National Museum of Natural History, and the University of Washington Burke Museum. 
 
 
-## SUBFOLDERS 
+## Folders
 
-**migration:**\n
+**migration:**
 `geo_analysis_FLightR_git.Rmd`: Script to analyze raw geolocator data (on MoveBank) using FLightR. Produce some diagnostics and plots. With a few exceptions, this follows online vignettes pretty closely. Patagona distribution shapefile is freely available from BirdLife. 
 
 `patagona_migration_analysis_git.Rmd`: Some post-processing of geolocator tracks to crunch summary metrics and make plots (e.g., Fig. 1a).
@@ -48,6 +48,7 @@ Files for processing WGS data.
 
 `sample_list`: sample list for GATK pipeline, genomes only.
 
+-------
 
 **UCE_phyluce**:
 Phyluce pipeline for UCES. See Brant Faircloth's great and extensive documentation; my scripts are all modified closely from the pipeline. 
@@ -60,6 +61,7 @@ Phyluce pipeline for UCES. See Brant Faircloth's great and extensive documentati
 
 `uce_phylogenomics.slurm`: Process UCEs and get data into usable format for UCE time tree. 
 
+-------
 
 **seqcap_pop**:
 Sequence data filtering and variant calling w/ UCE data. 
@@ -76,6 +78,7 @@ Sequence data filtering and variant calling w/ UCE data.
 
 `sample_list_from_genomes_noNK279003_copy`: genomes sample list 
 
+-------
 
 **pop_structure**:
 
@@ -85,6 +88,7 @@ Sequence data filtering and variant calling w/ UCE data.
 
 `patagona_sNMF_git.Rmd`: run snmf in R
 
+-------
 
 **psmc**:
 Demographic modeling 
@@ -101,16 +105,19 @@ Toepad data involved many iterations of procedures, most of which didn't end up 
 
 `toegen.slurm`: process genomes from toe pads. Applies to higher quality toepad samples.
 
+-------
 
 **mtgenome**: 
 
 `mtgenome.slurm`: For obtaining mtgenome from references (retrieved from GenBank; see paper). Scripts for UCEs and toepads similar; adjust sample list as necessary. 
 
+-------
 
 **ND2**: 
 
 `patagonaND2.pbs`: Rip ND2 from genomes and UCEs and collate into a nice fasta for multiple alignments and diagnostics. 
 
+-------
 
 **hbba**:
 Exons 1 and 2 of the beta-a subunit of Hb. 
@@ -119,6 +126,7 @@ Exons 1 and 2 of the beta-a subunit of Hb.
 
 `sample_list_hbba`: Sample list for patagonahbba.pbs
 
+-------
 
 **beast**:
 Trees were made w/ phyluce outputs, constructed in Beast (w/ Beauti interface) and RAxML. See paper methods for settings/parameters used and outgroups (taken from publicly-available GenBank data). 
@@ -127,6 +135,7 @@ Trees were made w/ phyluce outputs, constructed in Beast (w/ Beauti interface) a
 
 `run_beast_parallel.slurm`: Run beast in parallel on CARC cluster. 
 
+-------
 
 **Fst**:
 
@@ -142,6 +151,7 @@ Trees were made w/ phyluce outputs, constructed in Beast (w/ Beauti interface) a
 
 `patagona_FstManhattan_git.Rmd`: Read in processed windowed Fst data to make Manhattan plots. 
 
+-------
 
 **pixy_pi**:
 
